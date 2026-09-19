@@ -131,9 +131,15 @@ class LauncherHomeState extends State<LauncherHome>
   void didPushNext() => SpikeBridge.homeRouteVisible(false);
 
   /// Back from whatever covered this route. The home screen is what the
-  /// rider sees again.
+  /// rider sees again, and the platform may have spent that whole time with
+  /// the track floor's window torn down (see [homeRouteVisible] on the
+  /// platform side) — so the plain-backdrop question is re-asked rather than
+  /// left at whatever it last was, the same as a return from another app.
   @override
-  void didPopNext() => SpikeBridge.homeRouteVisible(true);
+  void didPopNext() async {
+    await SpikeBridge.homeRouteVisible(true);
+    _refreshBackdrop();
+  }
 
   /// Re-read the inventory whenever the launcher comes back to the front.
   ///
