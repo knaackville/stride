@@ -102,11 +102,35 @@ object ApkVerifier {
         val packageName = info.packageName.orEmpty()
         if (packageName.isBlank()) return null
 
+        var signers = info.signerDigests()
+        if (signers.isEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            // Confirmed on this console by direct logging: getPackageArchiveInfo leaves
+            // PackageInfo.signingInfo entirely null for an archive file, even when
+            // GET_SIGNING_CERTIFICATES was the requested flag - not merely missing the rotation
+            // history checked below, the whole SigningInfo never gets built. GET_SIGNATURES and
+            // GET_SIGNING_CERTIFICATES cannot both be requested in one call (the platform rejects
+            // the combination), so this is a second, separate read of the same file with the
+            // deprecated flag, purely to reach the one field this vendor build does populate: the
+            // plain pre-P Signature array.
+            signers = legacySignerDigests(context, file)
+        }
+
         return ArchiveFacts(
             packageName = packageName,
             versionCode = info.versionCodeCompat(),
-            signerSha256 = info.signerDigests(),
+            signerSha256 = signers,
         )
+    }
+
+    @Suppress("DEPRECATION")
+    @SuppressLint("PackageManagerGetSignatures")
+    private fun legacySignerDigests(context: Context, file: File): List<String> {
+        val legacy = try {
+            context.packageManager.getPackageArchiveInfo(file.absolutePath, PackageManager.GET_SIGNATURES)
+        } catch (e: Exception) {
+            null
+        }
+        return legacy?.signatures?.map { sha256Hex(it.toByteArray()) } ?: emptyList()
     }
 
     private fun PackageInfo.versionCodeCompat(): Long =
@@ -124,15 +148,11 @@ object ApkVerifier {
                 when {
                     info == null -> null
                     info.hasMultipleSigners() -> info.apkContentsSigners
-                    // Documented to hold the current signer even with no rotation history, but on
-                    // this console it comes back empty for a single-signer file read via
-                    // getPackageArchiveInfo (observed on a stock, never-rotated Google system APK
-                    // whose apksigner-reported certificate matches the catalog exactly) - a vendor
-                    // PackageManager quirk with no installed-package equivalent to compare against.
-                    // apkContentsSigners is always populated straight from the file's own signing
-                    // block, so it is the fallback rather than the primary path: unlike the history,
-                    // it cannot reveal an *older*, rotated-away certificate the catalog might still
-                    // name, which is the one case this class exists to tolerate.
+                    // Documented to hold the current signer even with no rotation history. Falling
+                    // back to apkContentsSigners defensively if it is ever empty anyway: it is read
+                    // straight from the file's own signing block, so it is a safe substitute except
+                    // that it cannot reveal an *older*, rotated-away certificate the catalog might
+                    // still be pinned to, which is the one case the history path exists to catch.
                     else -> info.signingCertificateHistory
                         ?.takeIf { it.isNotEmpty() }
                         ?: info.apkContentsSigners
