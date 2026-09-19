@@ -135,10 +135,19 @@ class LauncherHomeState extends State<LauncherHome>
   /// the track floor's window torn down (see [homeRouteVisible] on the
   /// platform side) — so the plain-backdrop question is re-asked rather than
   /// left at whatever it last was, the same as a return from another app.
+  ///
+  /// Dropping a stale reveal here too, on the same terms
+  /// [didChangeAppLifecycleState] does: a rider who tapped through to see the
+  /// app grid before going into Settings did not ask to keep seeing it for
+  /// the rest of the session, only for that one glance. Without this, one
+  /// reveal outlives every future visit to the track until Stride is put in
+  /// the background and brought back.
   @override
   void didPopNext() async {
     await SpikeBridge.homeRouteVisible(true);
-    _refreshBackdrop();
+    await _refreshBackdrop();
+    if (!mounted || !_blankBackdrop || !_backdropRevealed) return;
+    setState(() => _backdropRevealed = false);
   }
 
   /// Re-read the inventory whenever the launcher comes back to the front.
