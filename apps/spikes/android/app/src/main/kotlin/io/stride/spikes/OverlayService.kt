@@ -130,9 +130,22 @@ class OverlayService : Service() {
          * Needed whenever something outside the service changes what the chrome is made of —
          * setting a goal adds a ring, clearing one takes it away — as opposed to merely changing
          * what an existing view says.
+         *
+         * Posted rather than run inline when the caller is off the main thread, since the views
+         * this touches can only be built there. When the caller is *already* on the main thread —
+         * every current caller is, being either an Activity lifecycle method or a method-channel
+         * handler — running inline instead of posting matters: a caller that turns around and reads
+         * back what changed (`trackFloorGet` right after `homeRouteVisible`, for instance) would
+         * otherwise see the pre-rebuild state, because the post lands after that read rather than
+         * before it.
          */
         fun refreshChrome() {
-            active?.let { svc -> svc.mainHandler.post { svc.rebuildChromeViews() } }
+            val svc = active ?: return
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                svc.rebuildChromeViews()
+            } else {
+                svc.mainHandler.post { svc.rebuildChromeViews() }
+            }
         }
 
         /**
