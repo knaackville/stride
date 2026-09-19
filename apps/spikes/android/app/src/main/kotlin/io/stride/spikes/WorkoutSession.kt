@@ -107,18 +107,6 @@ object WorkoutSession {
     /** When the current RUNNING stretch began, or 0 when not running. */
     private var runningSinceMs: Long = 0L
 
-    /**
-     * The duration [stop] most recently reported, for a listener notified of the STOPPING transition
-     * to show a summary with.
-     *
-     * [stop] zeroes [accumulatedMs] before notifying listeners — they must not see partial progress
-     * toward the *next* workout — so by the time a listener runs, [elapsedMs] itself already reads
-     * zero. This is the one number from a just-ended session a listener has any way to recover.
-     */
-    @Volatile
-    var lastCompletedMs: Long = 0L
-        private set
-
     /** Total time spent RUNNING this session, excluding paused stretches. */
     @Synchronized
     fun elapsedMs(): Long =
@@ -194,7 +182,6 @@ object WorkoutSession {
     fun stop(): Long {
         if (state == State.IDLE) return 0L
         val total = elapsedMs()
-        lastCompletedMs = total
         accumulatedMs = 0L
         runningSinceMs = 0L
         // The goal belongs to the workout, not to the app. Carrying it into the next session

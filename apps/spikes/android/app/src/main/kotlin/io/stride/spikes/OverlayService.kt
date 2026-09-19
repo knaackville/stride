@@ -518,7 +518,7 @@ class OverlayService : Service() {
 
     private var fanCell: FanCell? = null
 
-    private val workoutListener = WorkoutSession.Listener { state, ending ->
+    private val workoutListener = WorkoutSession.Listener { state, _ ->
         mainHandler.post {
             // A setpoint the rider asked for before the machine would take one. RUNNING is the
             // first moment the console will accept it; IDLE means the start was refused or given
@@ -538,23 +538,17 @@ class OverlayService : Service() {
                 lapTracker.reset()
                 lastKnownLap = 1
             }
-            // Read while the machine's own counters still reflect the workout that just ended —
-            // they are somebody else's clock and nothing here holds them from moving on.
-            if (shouldShowWorkoutSummary(state, ending, StopEscalation.active)) {
-                showWorkoutSummary(WorkoutSession.lastCompletedMs)
-            }
             // The track floor and the goal ring only exist while a workout does, so a state change
-            // can be a structural change to the chrome. Each is swapped on its own rather than
-            // through a full rebuild: tearing down the whole chrome to add or drop one window left
-            // the screen with no HUD on it at all for a frame, which is exactly the moment the goal
-            // ring disappears on every "End workout" tap (the goal clears with the stop) — reported
-            // as the backdrop behind the overlay flashing full screen before settling back down.
-            if (chromeVisible) {
-                syncTrackFloor()
-                syncGoalRing()
+            // is a structural change to the chrome, not just new text in it. Rebuilding only when
+            // the answer actually flipped keeps pause/resume from tearing the overlay down twice.
+            val structural = trackFloorWanted() != (trackFloorView != null) ||
+                WorkoutGoal.trackable() != (goalRingView != null)
+            if (chromeVisible && structural) {
+                rebuildChromeViews()
+            } else {
+                updateWorkoutUi()
+                scheduleElapsedTicker()
             }
-            updateWorkoutUi()
-            scheduleElapsedTicker()
         }
     }
 
@@ -607,17 +601,10 @@ class OverlayService : Service() {
         // change — not just their highlight — and that means adding and removing views, which only
         // a rebuild does. Gated on the generation so this happens once or twice a session rather
         // than every tick; we are on the main handler here, so a rebuild is safe.
-        //
-        // Only the rails, though, not the whole chrome (see [rebuildRails]). The answer lands the
-        // moment a console that was reconnecting finally comes back — right after its own reboot is
-        // the single most common time — and a full [rebuildChromeViews] there tore down the top bar,
-        // the bottom bar and both rails together, leaving nothing of the HUD on screen for a frame:
-        // reported as the backdrop behind the overlay flashing full screen as the overlay first came
-        // up, then snapping back to the columns either side of it.
         val presets = MachineLink.presetsGeneration.get()
         if (presets != appliedPresetsGeneration) {
             appliedPresetsGeneration = presets
-            if (chromeVisible && railsVisible) rebuildRails() else rebuildChromeViews()
+            rebuildChromeViews()
             return
         }
         syncRailHighlights()
@@ -1248,35 +1235,6 @@ class OverlayService : Service() {
     }
 
     /**
-     * The rider asked to end a workout, and this is the only place that says how it went.
-     *
-     * There was no such place before this: "End workout" returned straight to "Start workout" with
-     * nothing shown in between, so a workout was never visibly finished, only forgotten. One button,
-     * the same shape [showStopEscalation] uses for the one other card here that is not asking the
-     * rider to choose between two things — there is nothing to choose here either.
-     *
-     * Skipped while [StopEscalation] is active: that warning is the more important thing on screen,
-     * and [showFixIt] would tear it down to put this in its place.
-     */
-    private fun showWorkoutSummary(totalMs: Long) {
-        val elapsed = WorkoutSession.formatElapsed(totalMs)
-        val distance = distanceText()
-        val body = if (distance == MachineLink.NO_READING) {
-            "$elapsed on the clock."
-        } else {
-            "$elapsed on the clock, $distance mi covered."
-        }
-        showFixIt(
-            title = "Workout complete",
-            body = body,
-            where = null,
-            actionLabel = "Done",
-            dismissLabel = null,
-            accent = Color.rgb(84, 196, 140),
-        ) {}
-    }
-
-    /**
      * The same warning, in the shade, for the case where nobody is looking at the overlay.
      *
      * [WorkoutSession]'s own note is that the overlay outlives the Flutter engine and keeps
@@ -1525,26 +1483,6 @@ class OverlayService : Service() {
     }
 
     /**
-     * Add or drop the track floor on its own, without touching anything else on screen.
-     *
-     * [workoutListener] used to answer a change here with a full [rebuildChromeViews], which tore
-     * down the top bar, both rails and the bottom bar along with it — visible, for a frame, as
-     * whatever the rider was looking at underneath filling the entire screen before the HUD came
-     * back. The floor is one window; only that window needs to come or go.
-     */
-    private fun syncTrackFloor() {
-        val wanted = trackFloorWanted()
-        if (wanted == (trackFloorRoot != null)) return
-        if (wanted) {
-            addTrackFloor()
-        } else {
-            trackFloorRoot?.let { safeRemove(it) }
-            trackFloorRoot = null
-            trackFloorView = null
-        }
-    }
-
-    /**
      * Where the rider is on the lap, or nothing at all.
      *
      * Null is passed through deliberately: [TrackFloorView] draws an empty track for it rather than
@@ -1584,24 +1522,6 @@ class OverlayService : Service() {
             goalRingRoot = root
             goalRingView = ring
         } catch (_: Exception) {
-            goalRingRoot = null
-            goalRingView = null
-        }
-    }
-
-    /**
-     * Add or drop the goal ring on its own. See [syncTrackFloor] for why this is not a full rebuild:
-     * a goal clears the moment a workout ends (its own target does not survive to the next one), so
-     * this fires on every "End workout" tap and a full-chrome rebuild there was the most reliable way
-     * to see the whole-screen flash.
-     */
-    private fun syncGoalRing() {
-        val wanted = WorkoutGoal.trackable()
-        if (wanted == (goalRingRoot != null)) return
-        if (wanted) {
-            addGoalRing()
-        } else {
-            goalRingRoot?.let { safeRemove(it) }
             goalRingRoot = null
             goalRingView = null
         }
@@ -2308,22 +2228,6 @@ class OverlayService : Service() {
         )
         speedRail = binding
         rightSpeedView = binding?.scroll
-    }
-
-    /**
-     * Rebuild just the two side rails, not the whole chrome. See [updateMachineMetrics].
-     *
-     * Only the rail windows depend on [MachineLink.presetsGeneration] — the top bar, the bottom bar,
-     * the track floor and the corner buttons do not — so only they need to come down and go back up.
-     */
-    private fun rebuildRails() {
-        listOfNotNull(leftInclineView, rightSpeedView).forEach { safeRemove(it) }
-        leftInclineView = null
-        rightSpeedView = null
-        inclineRail = null
-        speedRail = null
-        addInclineRail()
-        addSpeedRail()
     }
 
     /**
@@ -3538,25 +3442,6 @@ class OverlayService : Service() {
 
 
 }
-
-/**
- * Whether a [WorkoutSession] transition should show the "workout complete" summary card.
- *
- * Only a genuine end — an abandoned start was never a workout to report on, and every other live
- * transition (pause, resume, the settle that follows a stop) is not an ending at all. And only when
- * nothing more urgent already has the rider's attention: a stop-escalation warning is the single most
- * important thing this overlay ever shows, and a summary card racing it off screen to report
- * something as small as how the workout went would be exactly backwards.
- *
- * Top-level so it can be tested without a Service; [OverlayService] delegates to it.
- */
-internal fun shouldShowWorkoutSummary(
-    state: WorkoutSession.State,
-    ending: WorkoutSession.Ending?,
-    stopEscalationActive: Boolean,
-): Boolean = state == WorkoutSession.State.STOPPING &&
-    ending == WorkoutSession.Ending.ENDED &&
-    !stopEscalationActive
 
 /**
  * Format one quick-pick value for its pill.
