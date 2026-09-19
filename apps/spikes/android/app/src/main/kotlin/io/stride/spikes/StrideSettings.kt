@@ -145,20 +145,17 @@ object StrideSettings {
     /**
      * Whether Stride's own launcher stands down to a plain backdrop while the track floor is drawn.
      *
-     * Two-state, unlike [trackFloor], and that is not an oversight. There is no useful "decide
-     * automatically" here: the launcher is only ever behind the track when the rider has already
-     * asked for the track to be there, so the automatic answer and the "leave my launcher alone"
-     * answer are the same answer.
-     *
-     * False by default, because the alternative default would hide the app grid, the settings
-     * button and the workout panel on a console with no physical Home or Back button, for riders
-     * who never asked for any of that.
+     * True by default: the track floor only ever draws over Stride's own launcher now (never a
+     * third-party app), so the pinned-apps grid or the "no pinned apps yet" prompt sitting half
+     * behind it is visual noise, not information the rider is missing. The launcher's blank-backdrop
+     * widget has its own tap-to-reveal, standing in for a physical Home/Back button when a rider does
+     * need the grid or the settings button while the track is up.
      *
      * Read by the launcher rather than by the overlay: the overlay draws nothing for this setting,
      * so caching a copy of it in [OverlayService] would be state nothing reads.
      */
     var trackBackdrop: Boolean
-        get() = requirePrefs().getBoolean(KEY_TRACK_BACKDROP, false)
+        get() = requirePrefs().getBoolean(KEY_TRACK_BACKDROP, true)
         set(value) {
             requirePrefs().edit().putBoolean(KEY_TRACK_BACKDROP, value).apply()
         }
