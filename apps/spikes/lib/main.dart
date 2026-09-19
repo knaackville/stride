@@ -4,6 +4,7 @@ library;
 import 'package:flutter/material.dart';
 
 import 'bridge.dart';
+import 'route_observer.dart';
 import 'screens/launcher_home.dart';
 import 'theme/stride_theme.dart';
 import 'widgets/hud_inset.dart';
@@ -49,6 +50,7 @@ class _SpikeAppState extends State<SpikeApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       navigatorKey: _navigatorKey,
+      navigatorObservers: <NavigatorObserver>[routeObserver],
       title: 'Stride',
       debugShowCheckedModeBanner: false,
       theme: StrideTheme.dark(),

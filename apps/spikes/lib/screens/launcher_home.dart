@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../bridge.dart';
 import '../model/appstore.dart';
+import '../route_observer.dart';
 import '../theme/stride_tokens.dart';
 import '../widgets/stride_sheet.dart';
 import '../widgets/app_models.dart';
@@ -30,7 +31,7 @@ class LauncherHome extends StatefulWidget {
 }
 
 class LauncherHomeState extends State<LauncherHome>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, RouteAware {
   late final ProfileStore _profiles = widget.profiles ?? ProfileStore();
   final WorkoutController _workout = WorkoutController();
   final AppIconCache _iconCache = AppIconCache();
@@ -105,8 +106,16 @@ class LauncherHomeState extends State<LauncherHome>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute) routeObserver.subscribe(this, route);
+  }
+
+  @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    routeObserver.unsubscribe(this);
     _appstorePoll?.cancel();
     _workout.removeListener(_syncGoalWithSession);
     _profiles.dispose();
@@ -115,6 +124,16 @@ class LauncherHomeState extends State<LauncherHome>
     _setup.dispose();
     super.dispose();
   }
+
+  /// Settings, All apps, or anything else got pushed on top of this route —
+  /// the launcher's own home screen is no longer what is on screen.
+  @override
+  void didPushNext() => SpikeBridge.homeRouteVisible(false);
+
+  /// Back from whatever covered this route. The home screen is what the
+  /// rider sees again.
+  @override
+  void didPopNext() => SpikeBridge.homeRouteVisible(true);
 
   /// Re-read the inventory whenever the launcher comes back to the front.
   ///

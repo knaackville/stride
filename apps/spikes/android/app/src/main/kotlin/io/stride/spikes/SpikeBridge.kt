@@ -170,6 +170,7 @@ class SpikeBridge(private val context: Context) : MethodChannel.MethodCallHandle
                 "trackFloorGet" -> result.success(trackFloorGet())
                 "trackFloorSet" -> result.success(trackFloorSet(call))
                 "trackBackdropSet" -> result.success(trackBackdropSet(call))
+                "homeRouteVisible" -> result.success(homeRouteVisible(call))
 
                 // --- settings + system grants ---
                 "settingsGet" -> result.success(settingsGet())
@@ -893,6 +894,16 @@ class SpikeBridge(private val context: Context) : MethodChannel.MethodCallHandle
         StrideSettings.attach(context)
         val blank = call.argument<Boolean>("blank") ?: return false
         StrideSettings.trackBackdrop = blank
+        return true
+    }
+
+    /**
+     * Dart reports whether its own home route (as opposed to Settings, All apps, or anything else
+     * it has pushed on top) is the one currently visible.
+     */
+    private fun homeRouteVisible(call: MethodCall): Boolean {
+        val visible = call.argument<Boolean>("visible") ?: return false
+        MainActivity.setHomeRouteVisible(visible)
         return true
     }
 

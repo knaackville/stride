@@ -28,6 +28,27 @@ class MainActivity : FlutterActivity() {
             private set
 
         /**
+         * True while the launcher's own home route — not Settings, All apps, or any other screen
+         * pushed on top of it — is the visible one.
+         *
+         * [launcherForeground] alone is not enough for this: it is Activity-level, so it stays true
+         * across every Flutter route Stride ever pushes, and a track floor gated on it only would
+         * keep drawing over Settings or the app grid. Kept here rather than in [OverlayService]
+         * because Dart is the only thing that knows which of its own routes is on top; this is
+         * where it reports back.
+         */
+        @Volatile
+        var homeRouteVisible: Boolean = true
+            private set
+
+        /** Dart reports a change in whether its home route is the visible one. */
+        fun setHomeRouteVisible(visible: Boolean) {
+            if (homeRouteVisible == visible) return
+            homeRouteVisible = visible
+            OverlayService.refreshChrome()
+        }
+
+        /**
          * The live Activity, when there is one.
          *
          * Only an Activity can raise the system's "make this your home app?" dialog — the role

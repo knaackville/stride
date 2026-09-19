@@ -86,14 +86,20 @@ class OverlayService : Service() {
         /**
          * True when the floor is currently drawn — the rider's choice, or the automatic default.
          *
-         * The default is deliberately narrow: a track floor is a picture of *motion*, so it earns
-         * the middle of the screen only while a workout is under way, and only on Stride's own
-         * launcher — it never draws over another app's content. An explicit choice overrides both,
-         * in either direction.
+         * The home-route check is not part of the choice/default split below and applies to both:
+         * [MainActivity.launcherForeground] alone stays true across every screen Stride ever pushes
+         * (Settings, All apps, ...), so gating only on that left "always on" drawing the floor over
+         * Settings too. Whether the rider chose "always on" or is relying on the automatic default,
+         * neither one is a request to cover a screen that is not the launcher's own home route.
+         *
+         * Within that gate, the default is deliberately narrow: a track floor is a picture of
+         * *motion*, so it earns the middle of the screen only while a workout is under way. An
+         * explicit choice overrides that part, in either direction.
          */
-        fun trackFloorOn(): Boolean = trackFloorChosen
-            ?: (WorkoutSession.state != WorkoutSession.State.IDLE &&
-                MainActivity.launcherForeground)
+        fun trackFloorOn(): Boolean {
+            if (!MainActivity.launcherForeground || !MainActivity.homeRouteVisible) return false
+            return trackFloorChosen ?: (WorkoutSession.state != WorkoutSession.State.IDLE)
+        }
 
         /** Set (or, with null, un-set) the rider's choice and redraw if the overlay is up. */
         fun setTrackFloor(chosen: Boolean?) {

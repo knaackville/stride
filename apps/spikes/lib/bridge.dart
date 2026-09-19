@@ -200,6 +200,13 @@ class SpikeBridge {
   static Future<bool> trackBackdropSet(bool blank) =>
       _bool('trackBackdropSet', <String, dynamic>{'blank': blank});
 
+  /// Tell the platform whether the launcher's own home route (as opposed to
+  /// Settings, All apps, or anything else pushed on top of it) is the one on
+  /// screen right now. The track floor's "always on" choice is scoped to this
+  /// route, not to Stride's whole Activity, so it stops drawing over Settings.
+  static Future<bool> homeRouteVisible(bool visible) =>
+      _bool('homeRouteVisible', <String, dynamic>{'visible': visible});
+
   // App store - catalog, updates, installs
   //
   // Every one of these is a *Safe variant: the app store is the one surface that must never take
