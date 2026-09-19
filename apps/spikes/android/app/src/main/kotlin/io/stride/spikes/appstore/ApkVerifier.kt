@@ -124,7 +124,18 @@ object ApkVerifier {
                 when {
                     info == null -> null
                     info.hasMultipleSigners() -> info.apkContentsSigners
+                    // Documented to hold the current signer even with no rotation history, but on
+                    // this console it comes back empty for a single-signer file read via
+                    // getPackageArchiveInfo (observed on a stock, never-rotated Google system APK
+                    // whose apksigner-reported certificate matches the catalog exactly) - a vendor
+                    // PackageManager quirk with no installed-package equivalent to compare against.
+                    // apkContentsSigners is always populated straight from the file's own signing
+                    // block, so it is the fallback rather than the primary path: unlike the history,
+                    // it cannot reveal an *older*, rotated-away certificate the catalog might still
+                    // name, which is the one case this class exists to tolerate.
                     else -> info.signingCertificateHistory
+                        ?.takeIf { it.isNotEmpty() }
+                        ?: info.apkContentsSigners
                 }
             } else {
                 @Suppress("DEPRECATION")
