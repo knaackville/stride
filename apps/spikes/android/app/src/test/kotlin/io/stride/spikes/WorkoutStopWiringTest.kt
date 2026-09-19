@@ -200,6 +200,36 @@ class WorkoutStopWiringTest {
         awaitCall("stop")
     }
 
+    /**
+     * [WorkoutSession.lastCompletedMs] is what [OverlayService]'s workout-complete card reads.
+     *
+     * `stop()` zeroes the running clock before notifying listeners — see its own doc comment — so a
+     * listener reacting to the STOPPING transition has no way to ask [WorkoutSession.elapsedMs] how
+     * long the session ran. This is the only number left standing for it to read.
+     *
+     * Not asserted against a real sleep: `unitTests.isReturnDefaultValues` stubs
+     * `SystemClock.elapsedRealtime()` to a constant zero in this module's unit tests, which the whole
+     * suite already lives with. What actually matters — that nothing is lost between the number
+     * `elapsedMs()` held immediately before the reset and the number a listener can read afterwards —
+     * holds regardless of what that constant is.
+     */
+    @Test
+    fun `stop records the elapsed duration for the summary card to read`() {
+        runWorkout()
+        val expected = WorkoutSession.elapsedMs()
+        val total = WorkoutSession.stop()
+        assertEquals(
+            "stop() must return what elapsedMs() reported immediately before the reset",
+            expected,
+            total,
+        )
+        assertEquals(
+            "lastCompletedMs must match what stop() handed its own caller",
+            total,
+            WorkoutSession.lastCompletedMs,
+        )
+    }
+
     /** A pause is still not an end: no stop, no settling writes, and no STOPPING. */
     @Test
     fun `a pause still sends only a pause`() {
