@@ -389,9 +389,22 @@ class StrideAppstoreService : Service() {
             bundleId,
             "Installing ${entry.name} (${done + 1} of ${bundle.packages.size})",
         )
-        runCatching { stageAndInstall(entry) }.onFailure {
-            AppstoreState.bundleFailed(bundleId, "${entry.name} failed: ${it.message}")
-        }
+        runCatching { stageAndInstall(entry) }
+            .onFailure { AppstoreState.bundleFailed(bundleId, "${entry.name} failed: ${it.message}") }
+            .onSuccess {
+                // stageAndInstall parks or fails *without throwing* in several places (the safety
+                // gate, a verification rejection) - each updates the per-package row and returns
+                // normally, so this onFailure never sees them. Left unchecked, the bundle's own
+                // progress message stays "Installing ... (1 of N)" with an endless spinner and no
+                // button forever, even after the rider clears whatever it was waiting on (granting
+                // the install-unknown-apps permission, most often), because nothing re-enters this
+                // method until they tap a button that the spinner is hiding.
+                val stage = AppstoreState.status(entry.packageName).stage
+                if (stage == AppstoreState.Stage.READY || stage == AppstoreState.Stage.FAILED) {
+                    val message = AppstoreState.status(entry.packageName).message
+                    AppstoreState.bundleFailed(bundleId, message ?: holdReason(this))
+                }
+            }
     }
 
     /** Everything downloaded and verified but parked by the safety gate. */
