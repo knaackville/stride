@@ -73,10 +73,11 @@ class OverlayService : Service() {
         /**
          * Whether the rider has explicitly chosen a track-floor state this session.
          *
-         * Until they do, the floor follows what is playing underneath: it is a decorative surface
-         * in the middle of the screen, which is exactly where a film is. An explicit choice is
-         * remembered and stops the automatic suppression second-guessing it. Held here rather than
-         * per-instance so the setting survives an overlay restart and is readable from the bridge.
+         * Until they do, the floor only appears on Stride's own home screen: it is a decorative
+         * surface in the middle of the screen, and any third-party app already owns that space. An
+         * explicit choice is remembered and stops the automatic suppression second-guessing it. Held
+         * here rather than per-instance so the setting survives an overlay restart and is readable
+         * from the bridge.
          */
         @Volatile
         var trackFloorChosen: Boolean? = null
@@ -86,13 +87,13 @@ class OverlayService : Service() {
          * True when the floor is currently drawn — the rider's choice, or the automatic default.
          *
          * The default is deliberately narrow: a track floor is a picture of *motion*, so it earns
-         * the middle of the screen only while a workout is under way, and it yields to video even
-         * then. An explicit choice overrides both, in either direction.
+         * the middle of the screen only while a workout is under way, and only on Stride's own
+         * launcher — it never draws over another app's content. An explicit choice overrides both,
+         * in either direction.
          */
-        fun trackFloorOn(context: Context): Boolean = trackFloorChosen
+        fun trackFloorOn(): Boolean = trackFloorChosen
             ?: (WorkoutSession.state != WorkoutSession.State.IDLE &&
-                !MainActivity.launcherForeground &&
-                !MediaNowPlaying.videoIsPlaying(context))
+                MainActivity.launcherForeground)
 
         /** Set (or, with null, un-set) the rider's choice and redraw if the overlay is up. */
         fun setTrackFloor(chosen: Boolean?) {
@@ -1414,7 +1415,7 @@ class OverlayService : Service() {
      * watch a lap counter over it. Music is deliberately not treated the same way -- there is
      * nothing to occlude, and the floor is the more interesting thing to look at.
      */
-    private fun trackFloorWanted(): Boolean = trackFloorOn(this)
+    private fun trackFloorWanted(): Boolean = trackFloorOn()
 
     private fun addTrackFloor() {
         if (!trackFloorWanted()) return

@@ -852,7 +852,7 @@ class SpikeBridge(private val context: Context) : MethodChannel.MethodCallHandle
     private fun trackFloorGet(): Map<String, Any?> {
         StrideSettings.attach(context)
         return mapOf(
-            "on" to OverlayService.trackFloorOn(context),
+            "on" to OverlayService.trackFloorOn(),
             // What the rider asked for and what is actually on screen are different questions, and
             // the launcher needs the second one before it will blank itself. See
             // [OverlayService.trackFloorVisible].
