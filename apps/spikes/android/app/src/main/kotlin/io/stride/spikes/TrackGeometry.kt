@@ -2,6 +2,7 @@ package io.stride.spikes
 
 import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.math.sin
@@ -21,6 +22,19 @@ import kotlin.math.sin
  * whole ellipse down to make an inner edge produces a lane as wide as the radius difference on the
  * long axis and a sliver of that on the short one — a shape that pinches at the ends and balloons
  * at the sides, which is why it never read as a track.
+ *
+ * ### Travel is a distance, not an angle
+ *
+ * The lap position this surface is handed is a fraction of the lap's *length* — [LapTracker]
+ * divides the machine's own distance register by the lap's length and hands over the remainder. So
+ * `u` is arc length, and it has to be turned into an angle before the ellipse can be asked
+ * anything. Feeding it straight in as the angle is the mistake this class used to make, and on an
+ * ellipse this eccentric it is not a rounding error: a degree of angle is worth about two and a
+ * half times as much ground on the straights as it is round the ends, so a rider running at a
+ * steady pace watched their marker crawl along the near straight and then whip round the bend, and
+ * the completed band was out by up to 3% of a lap in between the four extremes. [buildArcTable]
+ * measures the centreline once per fit and inverts it, so equal steps in `u` are equal steps of
+ * ground — which is also what makes the centre-line dashes come out evenly spaced.
  *
  * ### The camera
  *
@@ -82,6 +96,12 @@ class TrackGeometry(
 
         private const val TAU = (2.0 * PI).toFloat()
 
+        /** Steps used to measure the centreline before inverting it. */
+        private const val ARC_SAMPLES = 2048
+
+        /** Entries in the inverted distance -> angle table, which is interpolated between. */
+        private const val ARC_TABLE = 512
+
         /** Passing anything outside this to [fit] means the ground ellipse would degenerate. */
         private const val MIN_GROUND_RX = 0.85f
         private const val MAX_GROUND_RX = 6f
@@ -93,8 +113,32 @@ class TrackGeometry(
     var y: Float = 0f
         private set
 
-    var groundRx: Float = 2.4f
+    /**
+     * The same point before the perspective divide, in ground units.
+     *
+     * Exposed because it is the only place the *real* track can be measured: screen distance is
+     * perspective-weighted by construction, so nothing drawn can tell you whether two steps of
+     * travel covered the same amount of ground. The arc-length parameterisation is checked against
+     * these.
+     */
+    var groundX: Float = 0f
         private set
+    var groundY: Float = 0f
+        private set
+
+    /**
+     * Long radius of the ground ellipse, the short one being 1.
+     *
+     * Assigning it rebuilds the arc-length table, because that table is a measurement *of* this
+     * ellipse and a stale one would put every travel fraction on the shape from the previous
+     * solve. The solve in [solveGroundRx] assigns this several times, so the rebuild lives here
+     * rather than at the call sites, where it would be one more thing to remember.
+     */
+    var groundRx: Float = 2.4f
+        private set(value) {
+            field = value
+            buildArcTable()
+        }
     var scale: Float = 1f
         private set
     var originX: Float = 0f
@@ -122,6 +166,12 @@ class TrackGeometry(
     var ready: Boolean = false
         private set
 
+    // Cumulative centreline length by angle, and its inverse: the fraction of the way round the
+    // ellipse at each equal step of distance. Both are rebuilt by [buildArcTable] whenever the
+    // ellipse changes, and only read after that, so a frame allocates nothing walking them.
+    private val cumulative = FloatArray(ARC_SAMPLES + 1)
+    private val phaseAt = FloatArray(ARC_TABLE + 1)
+
     // Scratch for the measuring pass. Lane bounds drive the shaders; the union of lane and marker
     // is what actually has to fit the box.
     private var laneMinY = 0f
@@ -130,6 +180,12 @@ class TrackGeometry(
     private var unionMaxX = 0f
     private var unionMinY = 0f
     private var unionMaxY = 0f
+
+    init {
+        // The property initialiser above does not run the setter, so the default ellipse would
+        // otherwise have an all-zero table until the first fit assigned a new radius.
+        buildArcTable()
+    }
 
     /**
      * Lay the track into a [width] x [height] box, inset by [padX] / [padY], and measure everything
@@ -221,9 +277,13 @@ class TrackGeometry(
     /**
      * Project the lane point at travel fraction [u] from the start line, offset [side] across the
      * lane (-1 inner, 0 centreline, +1 outer), leaving the answer in [x] and [y].
+     *
+     * [u] is a fraction of the lap's *length*, not of its angle — see the class note. Values
+     * outside 0..1 wrap, which is what lets the start/finish chequer be laid out across the line
+     * rather than after it.
      */
     fun project(u: Float, side: Float) {
-        val theta = START_ANGLE - u * TAU
+        val theta = START_ANGLE - phaseFor(u) * TAU
         val cosT = cos(theta)
         val sinT = sin(theta)
 
@@ -237,8 +297,61 @@ class TrackGeometry(
 
         // The perspective divide. Depth cannot reach 1 / perspectiveK, so this cannot blow up.
         val s = 1f / (1f - perspectiveK * gy)
+        groundX = gx
+        groundY = gy
         x = gx * s * scale + originX
         y = gy * s * scale + originY
+    }
+
+    /**
+     * Turn a fraction of the lap's length into a fraction of the way round the ellipse.
+     *
+     * A table lookup rather than an integral: inverting arc length has no closed form on an
+     * ellipse, and this is called several times per drawn frame.
+     */
+    private fun phaseFor(u: Float): Float {
+        val wrapped = u - floor(u)
+        val pos = wrapped * ARC_TABLE
+        val i = pos.toInt().coerceIn(0, ARC_TABLE - 1)
+        return phaseAt[i] + (phaseAt[i + 1] - phaseAt[i]) * (pos - i)
+    }
+
+    /**
+     * Measure the ground centreline at [ARC_SAMPLES] equal steps of angle, then read that mapping
+     * backwards into [phaseAt] at equal steps of distance.
+     *
+     * Runs once per candidate [groundRx] during the solve and once for the answer — a few thousand
+     * trig calls on a size change, and nothing at all per frame.
+     */
+    private fun buildArcTable() {
+        var previousX = groundRx * cos(START_ANGLE)
+        var previousY = sin(START_ANGLE)
+        cumulative[0] = 0f
+        for (i in 1..ARC_SAMPLES) {
+            val theta = START_ANGLE - (i.toFloat() / ARC_SAMPLES) * TAU
+            val cx = groundRx * cos(theta)
+            val cy = sin(theta)
+            cumulative[i] = cumulative[i - 1] + hypot(cx - previousX, cy - previousY)
+            previousX = cx
+            previousY = cy
+        }
+        val total = cumulative[ARC_SAMPLES]
+        // A degenerate ellipse has no length to distribute; fall back to the raw angle rather than
+        // dividing by nothing. [fit] refuses such a box anyway, so this is only ever a guard.
+        if (!(total > 0f)) {
+            for (j in 0..ARC_TABLE) phaseAt[j] = j.toFloat() / ARC_TABLE
+            return
+        }
+        phaseAt[0] = 0f
+        phaseAt[ARC_TABLE] = 1f
+        var i = 0
+        for (j in 1 until ARC_TABLE) {
+            val want = total * j / ARC_TABLE
+            while (i < ARC_SAMPLES - 1 && cumulative[i + 1] < want) i++
+            val span = cumulative[i + 1] - cumulative[i]
+            val within = if (span > 0f) (want - cumulative[i]) / span else 0f
+            phaseAt[j] = (i + within) / ARC_SAMPLES
+        }
     }
 
     /** Width of the lane on screen where the runner is standing at travel fraction [u]. */

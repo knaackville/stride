@@ -4,7 +4,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.sin
 
 /**
  * The track has to fill whatever box the overlay hands it and has to read as a track. Both are
@@ -189,6 +191,63 @@ class TrackGeometryTest {
         // Halfway round should be the far side of the loop, not a point next door to the start.
         g.project(0.5f, 0f)
         assertTrue(hypot(g.x - startX, g.y - startY) > 1000f)
+    }
+
+    @Test
+    fun `equal steps of travel cover equal ground`() {
+        // Lap position arrives as a fraction of the lap's *distance* — LapTracker divides the
+        // machine's own distance register by the lap length — so a step of travel has to be a step
+        // of ground, not a step of angle. On this ellipse a degree is worth about two and a half
+        // times as much ground on the straights as it is round the ends, which is what used to make
+        // the marker crawl down the near straight and whip round the bend at a steady pace.
+        //
+        // Measured in ground units on purpose: screen distance is perspective-weighted by
+        // construction, so it cannot tell a parameterisation bug from a camera doing its job.
+        for ((w, h) in listOf(1596f to 762f, 800f to 800f, 1020f to 300f)) {
+            val g = fitted(w, h)
+            var shortest = Float.MAX_VALUE
+            var longest = 0f
+            g.project(0f, 0f)
+            var previousX = g.groundX
+            var previousY = g.groundY
+            for (i in 1..288) {
+                g.project(i / 288f, 0f)
+                val step = hypot(g.groundX - previousX, g.groundY - previousY)
+                if (step < shortest) shortest = step
+                if (step > longest) longest = step
+                previousX = g.groundX
+                previousY = g.groundY
+            }
+            assertTrue("no ground covered in $w x $h", shortest > 0f)
+            assertEquals("uneven travel in $w x $h", 1f, longest / shortest, 0.02f)
+        }
+    }
+
+    @Test
+    fun `the four extremes still land on quarter laps`() {
+        // The ellipse is symmetric about both axes, so equal distance and equal angle agree exactly
+        // at the quarter points however the rest of the lap is parameterised. Everything that fits
+        // the track to its box leans on that, and so does the reading of "halfway round".
+        val g = fitted(1596f, 762f)
+        for (u in listOf(0f, 0.25f, 0.5f, 0.75f)) {
+            g.project(u, 0f)
+            val theta = TrackGeometry.START_ANGLE - u * 2f * Math.PI.toFloat()
+            assertEquals("x of the quarter point at u=$u", g.groundRx * cos(theta), g.groundX, 0.002f)
+            assertEquals("y of the quarter point at u=$u", sin(theta), g.groundY, 0.002f)
+        }
+    }
+
+    @Test
+    fun `travel wraps past the start line`() {
+        // The start/finish chequer is laid out across the line, so it asks for travel fractions
+        // just below zero. Those have to come out just short of a full lap, not clamped onto it.
+        val g = fitted(1596f, 762f)
+        g.project(-0.01f, 0f)
+        val beforeX = g.x
+        val beforeY = g.y
+        g.project(0.99f, 0f)
+        assertEquals(beforeX, g.x, 0.01f)
+        assertEquals(beforeY, g.y, 0.01f)
     }
 
     @Test

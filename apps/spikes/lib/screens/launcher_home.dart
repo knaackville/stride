@@ -61,7 +61,21 @@ class LauncherHomeState extends State<LauncherHome>
   /// back would be a console the rider cannot operate. The track floor's window
   /// is `FLAG_NOT_TOUCHABLE`, so a tap anywhere in the middle of the screen
   /// reaches this launcher underneath it.
+  ///
+  /// It is a glance, not a mode, so every way of finishing with the launcher
+  /// drops it again: leaving Stride and coming back, popping Settings or All
+  /// apps off the top of it, and — the one that actually catches most riders —
+  /// starting a workout. See [_syncGoalWithSession].
   bool _backdropRevealed = false;
+
+  /// Whether the last thing [_workout] told us was that a session is under way.
+  ///
+  /// Only the *edge* out of idle is interesting, and the controller notifies
+  /// once a second while a workout runs, so the previous answer has to be kept
+  /// rather than the question re-asked. Acting on the level instead would
+  /// re-blank the launcher a second after every tap, which would make the app
+  /// grid unreachable for exactly as long as the rider is running.
+  bool _workoutUnderWay = false;
 
   @override
   void initState() {
@@ -81,9 +95,30 @@ class LauncherHomeState extends State<LauncherHome>
   /// target that no longer exists.
   void _syncGoalWithSession() {
     if (_workout.isIdle && _goal.isTrackable) _loadGoal();
+    final underWay = !_workout.isIdle;
+    final started = underWay && !_workoutUnderWay;
+    _workoutUnderWay = underWay;
     // The track floor comes and goes with the workout, and the plain backdrop
     // follows the floor rather than the setting.
-    _refreshBackdrop();
+    final refreshed = _refreshBackdrop();
+    if (!started) return;
+
+    // A workout beginning is the third way a reveal ends, and with the track
+    // floor set to "always on" it is the only one that ever fires: the rider
+    // has to tap through the plain backdrop to reach Start, which is precisely
+    // what reveals the app grid, and nothing afterwards puts Stride in the
+    // background or pushes a route over the home screen. So the grid stayed up
+    // behind the track for the rest of the session and every session after it,
+    // until the console was rebooted — which is the shape the bug was reported
+    // in. Starting is where the reveal has served its purpose.
+    //
+    // Chained rather than fired alongside, for the same reason it is on resume:
+    // the reveal is only dropped once the platform has confirmed there is a
+    // track floor actually on screen to replace the launcher with.
+    refreshed.then((_) {
+      if (!mounted || !_blankBackdrop || !_backdropRevealed) return;
+      setState(() => _backdropRevealed = false);
+    });
   }
 
   /// Re-read whether the launcher should be standing down behind the track.
