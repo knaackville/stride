@@ -4,9 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import kotlin.math.cos
 import kotlin.math.hypot
-import kotlin.math.sin
 
 /**
  * The track has to fill whatever box the overlay hands it and has to read as a track. Both are
@@ -107,11 +105,11 @@ class TrackGeometryTest {
 
     @Test
     fun `the lane is one width the whole way round`() {
-        // The failure this guards against: building the inner edge by scaling the whole ellipse
-        // down, which pinches the lane at the ends of the straights and fattens it at the sides, so
-        // the shape stops reading as a track. With no camera left to weight one side of the loop
-        // over another, a genuinely constant-width lane now has to measure as *exactly* one width
-        // everywhere, not just avoid the old near/far pinch-and-balloon failure.
+        // The failure this guards against: building the inner edge by scaling the whole outline
+        // down, which pinches the lane on the turns and fattens it on the straights, so the shape
+        // stops reading as a track. With no camera left to weight one side of the loop over another
+        // either, a genuinely constant-width lane now has to measure as *exactly* one width
+        // everywhere, not just avoid the old pinch-and-balloon failure.
         val g = fitted(1596f, 762f)
         val first = g.laneWidthAt(0f)
         assertTrue("lane should not vanish", first > 1f)
@@ -127,7 +125,7 @@ class TrackGeometryTest {
         // The skew this guards against: a depth-dependent camera used to scale the outer and inner
         // edge of the lane by different amounts at the same travel fraction, tilting the segment
         // between them off-square by as much as 37 degrees at the ends of the straights. With no
-        // camera, the offset is built along the ellipse's true geometric normal (see
+        // camera, the offset is built along each piece's own true geometric normal (see
         // [TrackGeometry.project]) and survives the uniform scale in [TrackGeometry.fit] unsheared,
         // so it has to come out perpendicular everywhere, not just closer to it.
         val g = fitted(1596f, 762f)
@@ -156,29 +154,71 @@ class TrackGeometryTest {
     }
 
     @Test
-    fun `travel runs from the start line across the loop`() {
-        // Start at the left end of the loop, then down to the bottom of the screen before crossing
-        // back up to the top. The start line is not the leftmost *pixel* in general — see the
-        // perpendicularity test above for why a camera used to make that true — but with no camera
-        // it is: the left end of the ground ellipse sits at the same height as the halfway point,
-        // and nothing between them reaches further left or right than either.
+    fun `the start line sits at the midpoint of one straight`() {
+        // A real track's start/finish stripe sits on a straight, not mid-turn -- see the reference
+        // this shape was modelled on. Checked in ground units, which do not depend on any
+        // particular box's scale and origin.
         val g = fitted(1596f, 762f)
         g.project(0f, 0f)
-        val startX = g.x
-        val startY = g.y
-        g.project(0.5f, 0f)
-        val halfX = g.x
-        val halfY = g.y
-        g.project(0.25f, 0f)
-        val bottomY = g.y
-        g.project(0.75f, 0f)
-        val topY = g.y
+        assertEquals(0f, g.groundX, 0.0001f)
+        assertEquals(1f, g.groundY, 0.0001f)
+    }
 
-        assertTrue("a quarter lap in should be toward the bottom of the screen", bottomY > startY)
-        assertTrue("three quarters in should be toward the top", topY < startY)
-        assertEquals("start and halfway sit level with each other", startY, halfY, 0.5f)
-        assertTrue("start line should be on the left", startX < g.infieldCenterX)
-        assertTrue("halfway should be on the right", halfX > g.infieldCenterX)
+    @Test
+    fun `halfway round is the midpoint of the opposite straight`() {
+        // The stadium is symmetric about both axes and the start sits on one of them, so half the
+        // perimeter away has to land exactly on the other straight's own midpoint.
+        val g = fitted(1596f, 762f)
+        g.project(0.5f, 0f)
+        assertEquals(0f, g.groundX, 0.0001f)
+        assertEquals(-1f, g.groundY, 0.0001f)
+    }
+
+    @Test
+    fun `travel visits both straights and both turns in order`() {
+        // Cross-checks [TrackGeometry.project]'s piecewise formula against the same breakpoints
+        // worked out independently here: half the straight length in, the first turn begins; that
+        // turn's radius is 1, so its arc length is exactly the angle it sweeps, PI for a semicircle;
+        // then the far straight, then the second turn, back to the start.
+        val g = fitted(1596f, 762f)
+        val half = g.straightLen / 2f
+        val perimeter = 2f * g.straightLen + 2f * Math.PI.toFloat()
+        fun at(distanceFromStart: Float) = distanceFromStart / perimeter
+
+        g.project(at(half), 0f)
+        assertEquals("end of the near straight (x)", half, g.groundX, 0.001f)
+        assertEquals("end of the near straight (y)", 1f, g.groundY, 0.001f)
+
+        g.project(at(half + Math.PI.toFloat()), 0f)
+        assertEquals("far end of the right-hand turn (x)", half, g.groundX, 0.001f)
+        assertEquals("far end of the right-hand turn (y)", -1f, g.groundY, 0.001f)
+
+        g.project(at(half + Math.PI.toFloat() + g.straightLen), 0f)
+        assertEquals("end of the far straight (x)", -half, g.groundX, 0.001f)
+        assertEquals("end of the far straight (y)", -1f, g.groundY, 0.001f)
+
+        g.project(at(half + 2f * Math.PI.toFloat() + g.straightLen), 0f)
+        assertEquals("far end of the left-hand turn (x)", -half, g.groundX, 0.001f)
+        assertEquals("far end of the left-hand turn (y)", 1f, g.groundY, 0.001f)
+    }
+
+    @Test
+    fun `each turn is a real semicircle of radius one`() {
+        // The centreline on a straight is exactly 1 unit from that straight's own line by
+        // definition; the turns are the part actually worth checking. Each one's centre sits
+        // straightLen/2 out from the middle on the x axis, so every centreline point on it should
+        // be exactly 1 ground unit from that centre -- not merely curved, but a true circular arc.
+        val g = fitted(1596f, 762f)
+        val half = g.straightLen / 2f
+        val perimeter = 2f * g.straightLen + 2f * Math.PI.toFloat()
+        var s = half + 0.01f
+        val turnEnd = half + Math.PI.toFloat() - 0.01f
+        while (s < turnEnd) {
+            g.project(s / perimeter, 0f)
+            val distanceFromCentre = hypot(g.groundX - half, g.groundY)
+            assertEquals("right turn radius at arc length $s", 1f, distanceFromCentre, 0.001f)
+            s += 0.05f
+        }
     }
 
     @Test
@@ -191,21 +231,26 @@ class TrackGeometryTest {
         assertEquals(startX, g.x, 0.01f)
         assertEquals(startY, g.y, 0.01f)
 
-        // Halfway round should be the far side of the loop, not a point next door to the start.
+        // Halfway round should be the far side of the loop, not a point next door to the start. The
+        // start sits on one straight and halfway sits on the other, directly across the infield —
+        // opposite corners of an ellipse, but straight across the *short* axis of a stadium — so
+        // "far" is judged against the shape's own height rather than a distance picked for the
+        // wide loop this shape replaced.
         g.project(0.5f, 0f)
-        assertTrue(hypot(g.x - startX, g.y - startY) > 1000f)
+        val loopHeight = g.outerBottom - g.outerTop
+        assertTrue(hypot(g.x - startX, g.y - startY) > loopHeight * 0.5f)
     }
 
     @Test
     fun `equal steps of travel cover equal ground`() {
         // Lap position arrives as a fraction of the lap's *distance* — LapTracker divides the
         // machine's own distance register by the lap length — so a step of travel has to be a step
-        // of ground, not a step of angle. On this ellipse a degree is worth about two and a half
-        // times as much ground on the straights as it is round the ends, which is what used to make
-        // the marker crawl down the near straight and whip round the bend at a steady pace.
+        // of ground. On a stadium this is exact by construction (see [TrackGeometry.project]'s own
+        // doc), but it is still worth pinning: a future change to the piecewise formula that got a
+        // segment boundary wrong would show up here as an uneven step, not as a compiler error.
         //
-        // Measured in ground units on purpose: screen distance is perspective-weighted by
-        // construction, so it cannot tell a parameterisation bug from a camera doing its job.
+        // Measured in ground units on purpose: screen distance is scaled by the box's own fit, which
+        // has nothing to do with whether travel itself is evenly paced.
         for ((w, h) in listOf(1596f to 762f, 800f to 800f, 1020f to 300f)) {
             val g = fitted(w, h)
             var shortest = Float.MAX_VALUE
@@ -223,20 +268,6 @@ class TrackGeometryTest {
             }
             assertTrue("no ground covered in $w x $h", shortest > 0f)
             assertEquals("uneven travel in $w x $h", 1f, longest / shortest, 0.02f)
-        }
-    }
-
-    @Test
-    fun `the four extremes still land on quarter laps`() {
-        // The ellipse is symmetric about both axes, so equal distance and equal angle agree exactly
-        // at the quarter points however the rest of the lap is parameterised. Everything that fits
-        // the track to its box leans on that, and so does the reading of "halfway round".
-        val g = fitted(1596f, 762f)
-        for (u in listOf(0f, 0.25f, 0.5f, 0.75f)) {
-            g.project(u, 0f)
-            val theta = TrackGeometry.START_ANGLE - u * 2f * Math.PI.toFloat()
-            assertEquals("x of the quarter point at u=$u", g.groundRx * cos(theta), g.groundX, 0.002f)
-            assertEquals("y of the quarter point at u=$u", sin(theta), g.groundY, 0.002f)
         }
     }
 

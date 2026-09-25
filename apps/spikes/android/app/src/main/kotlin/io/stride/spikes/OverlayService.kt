@@ -557,6 +557,11 @@ class OverlayService : Service() {
             if (state == WorkoutSession.State.IDLE) {
                 lapTracker.reset()
                 lastKnownLap = 1
+                // Immediate rather than waiting for the next tick: a floor set to "always on"
+                // survives this transition as the same view instance (see [trackFloorWanted]'s
+                // home-route gate and the structural check below), and its own lap number would
+                // otherwise sit on the old workout's colour until a fresh reading resets it.
+                trackFloorView?.resetLap()
             }
             // The track floor and the goal ring only exist while a workout does, so a state change
             // is a structural change to the chrome, not just new text in it. Rebuilding only when
@@ -646,7 +651,7 @@ class OverlayService : Service() {
                 if (MachineLink.consoleDetached) Color.rgb(255, 138, 128) else Color.rgb(238, 226, 202),
             )
         }
-        trackFloorView?.let { applyLapPosition(it) }
+        if (trackFloorView != null) sampleLapPosition()
         goalRingView?.let { applyGoalRing(it) }
         applyFanReadout()
         // The fan picker in the menu sheet has the same problem the readout does, from the other
@@ -1438,7 +1443,11 @@ class OverlayService : Service() {
 
     private fun addTrackFloor() {
         if (!trackFloorWanted()) return
-        val floor = TrackFloorView(this).apply {
+        // Seeded from the last lap the machine actually reported: [addTrackFloor] builds a *new*
+        // [TrackFloorView] on every chrome rebuild (a goal being set, a video starting, the rails
+        // being hidden), and starting a fresh one back at lap one's colour would claim a workout
+        // seven laps in had just restarted.
+        val floor = TrackFloorView(this, initialLap = lastKnownLap).apply {
             lapTitle = LAP_TITLE
             lapSubtitle = "track length"
             dim = 0.92f
@@ -1454,7 +1463,11 @@ class OverlayService : Service() {
             windowManager.addView(root, params)
             trackFloorRoot = root
             trackFloorView = floor
-            applyLapPosition(floor)
+            // Before wiring the live source: [TrackFloorView.positionSource]'s setter asks it
+            // immediately, and a brand-new [LapTracker] anchor from this sample is what lets the
+            // marker appear at the right spot on the very first frame rather than the first tick.
+            sampleLapPosition()
+            floor.positionSource = lapTracker::positionAt
         } catch (_: Exception) {
             trackFloorRoot = null
             trackFloorView = null
@@ -1503,21 +1516,21 @@ class OverlayService : Service() {
     }
 
     /**
-     * Where the rider is on the lap, or nothing at all.
+     * Feed the current distance and speed reading into [lapTracker].
      *
-     * Null is passed through deliberately: [TrackFloorView] draws an empty track for it rather than
-     * parking the marker on the start line, which is a claim about a workout we cannot see rather
-     * than a report of one.
-     *
-     * Position and lap go over in one call. They are one sample and the view colours itself from
-     * the lap, so handing them across separately let a lap boundary paint the incoming colour
-     * around the whole loop for the second it took the marker to animate through the wrap.
+     * That is all this does now: [TrackFloorView] no longer waits to be told where the rider is,
+     * it asks [lapTracker] for its own live-extrapolated answer on its own clock (see
+     * [TrackFloorView.positionSource], wired up once in [addTrackFloor]). This just keeps the
+     * anchor that extrapolation runs from up to date, on the same tick that reads every other
+     * metric off the machine.
      */
-    private fun applyLapPosition(floor: TrackFloorView) {
-        val position = lapTracker.sample(MachineLink.distanceMiles, System.currentTimeMillis())
+    private fun sampleLapPosition() {
+        val position = lapTracker.sample(
+            MachineLink.distanceMiles,
+            System.currentTimeMillis(),
+            MachineLink.speedMph,
+        )
         if (position != null) lastKnownLap = position.lap
-        floor.setLapPosition(position?.progress, lastKnownLap)
-        floor.lapBadge = position?.let { "LAP ${it.lap}" } ?: ""
     }
 
     private fun addGoalRing() {

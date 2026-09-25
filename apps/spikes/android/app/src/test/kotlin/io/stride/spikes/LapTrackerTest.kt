@@ -93,6 +93,114 @@ class LapTrackerTest {
 }
 
 /**
+ * The gap between two confirmed distance readings, filled in with the speed the machine reported
+ * alongside the last one — see [LapTracker]'s own doc for why the register alone is not smooth
+ * enough to animate directly.
+ */
+class LapTrackerPositionAtTest {
+
+    private fun tracker() = LapTracker(lapMiles = 0.25, holdMs = 12_000L)
+
+    @Test
+    fun `nothing is claimed before any sample arrives`() {
+        assertNull(tracker().positionAt(0L))
+    }
+
+    @Test
+    fun `extrapolation lands exactly on the anchor with no time elapsed`() {
+        val lap = tracker()
+        lap.sample(0.1, 0L, speedMph = 6.0)
+        val at = lap.positionAt(0L)!!
+        assertEquals(0.4f, at.progress, 0.0001f)
+        assertEquals(1, at.lap)
+    }
+
+    @Test
+    fun `extrapolation advances at the reported speed between confirmations`() {
+        val lap = tracker()
+        lap.sample(0.1, 0L, speedMph = 6.0)
+        // 6 mph for one second is 6 / 3600 miles, a sixth of a percent of the quarter-mile lap.
+        val at = lap.positionAt(1_000L)!!
+        assertEquals((0.1 + 6.0 / 3600.0).toFloat() / 0.25f, at.progress, 0.0001f)
+    }
+
+    @Test
+    fun `zero reported speed holds the position steady between confirmations`() {
+        // No speed argument at all, which is what a caller with nothing to extrapolate from passes.
+        val lap = tracker()
+        lap.sample(0.1, 0L)
+        val at = lap.positionAt(5_000L)!!
+        assertEquals(0.4f, at.progress, 0.0001f)
+    }
+
+    @Test
+    fun `extrapolation crosses a lap boundary the same way a confirmed reading would`() {
+        val lap = tracker()
+        lap.sample(0.24, 0L, speedMph = 6.0)
+        // 6mph for 6 seconds covers 0.01 miles, landing exactly on the next lap boundary.
+        val at = lap.positionAt(6_000L)!!
+        assertEquals(0f, at.progress, 0.0001f)
+        assertEquals(2, at.lap)
+    }
+
+    @Test
+    fun `extrapolation expires on the same clock a held reading would`() {
+        val lap = tracker()
+        lap.sample(0.1, 0L, speedMph = 6.0)
+        assertNotNull(lap.positionAt(12_000L))
+        assertNull(lap.positionAt(12_001L))
+    }
+
+    @Test
+    fun `a fresh confirmation below the running extrapolation does not rewind the marker`() {
+        // The only way this happens is the estimate having run a little ahead of the register --
+        // the speed reading overestimated the gap, or a whole-metre register lagged a stride behind
+        // -- and in neither case did the rider actually go backward. See the class doc.
+        val lap = tracker()
+        lap.sample(0.1, 0L, speedMph = 6.0)
+        val running = lap.positionAt(1_000L)!!.progress
+
+        // The register confirms less than the extrapolation had already reached.
+        val confirmed = lap.sample(0.1005, 1_000L, speedMph = 6.0)!!
+        assertTrue(
+            "confirmed progress ($confirmed) should not fall below what was already shown ($running)",
+            confirmed.progress >= running,
+        )
+    }
+
+    @Test
+    fun `a fresh confirmation ahead of the running extrapolation is trusted outright`() {
+        // The ordinary case: the register is not behind the estimate at all, so there is nothing to
+        // guard against and the fresh reading simply wins.
+        val lap = tracker()
+        lap.sample(0.1, 0L, speedMph = 6.0)
+
+        val confirmed = lap.sample(0.11, 1_000L, speedMph = 6.0)!!
+        assertEquals(0.11f / 0.25f, confirmed.progress, 0.0001f)
+    }
+
+    @Test
+    fun `a reset drops the extrapolation anchor along with the held position`() {
+        val lap = tracker()
+        lap.sample(0.1, 0L, speedMph = 6.0)
+        lap.reset()
+        assertNull(lap.positionAt(0L))
+    }
+
+    @Test
+    fun `a missed reading does not reset the extrapolation clock`() {
+        // sample(null, ...) is a dropped poll, not a fresh confirmation, so it must not touch the
+        // anchor -- this is really the same guarantee as the expiry test above, worth its own case
+        // because a missed reading is the one moment a caller most needs positionAt to keep working.
+        val lap = tracker()
+        lap.sample(0.1, 0L, speedMph = 6.0)
+        lap.sample(null, 1_000L)
+        assertNotNull(lap.positionAt(12_000L))
+        assertNull(lap.positionAt(12_001L))
+    }
+}
+
+/**
  * Which colour the track floor is painted on which lap.
  *
  * A lap used to end by erasing itself — the progress band collapsed at the boundary and the plain
