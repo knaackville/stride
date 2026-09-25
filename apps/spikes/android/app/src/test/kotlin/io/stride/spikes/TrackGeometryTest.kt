@@ -72,8 +72,8 @@ class TrackGeometryTest {
     fun `the marker never leaves the box`() {
         // The marker stands up out of the lane by more than a lane width, so fitting the lane on
         // its own puts the marker's head above the top edge for about a sixth of every lap — worst
-        // on the far straight, where the lane is already touching the top of the box. What has to
-        // fit is everything that gets drawn.
+        // at the top of the loop, where the lane is already touching the top of the box. What has
+        // to fit is everything that gets drawn.
         for ((w, h) in listOf(1596f to 762f, 800f to 800f, 1020f to 300f, 1564f to 742f)) {
             val g = fitted(w, h)
             for (i in 0..720) {
@@ -106,59 +106,62 @@ class TrackGeometryTest {
     }
 
     @Test
-    fun `lane width varies with distance and nothing else`() {
+    fun `the lane is one width the whole way round`() {
         // The failure this guards against: building the inner edge by scaling the whole ellipse
-        // down, which pinches the lane at the ends of the straights and fattens it at the sides,
-        // so the shape stops reading as a track. With a constant-width lane the only thing that
-        // can change the apparent width is depth, so width falls away from the near side of the
-        // loop to the far side. The tolerance is for the measurement rather than the shape: the
-        // two lane edges sit at slightly different depths, so the chord between them runs about a
-        // percent long where the lane is most steeply angled to the camera.
+        // down, which pinches the lane at the ends of the straights and fattens it at the sides, so
+        // the shape stops reading as a track. With no camera left to weight one side of the loop
+        // over another, a genuinely constant-width lane now has to measure as *exactly* one width
+        // everywhere, not just avoid the old near/far pinch-and-balloon failure.
         val g = fitted(1596f, 762f)
-        var previous = Float.MAX_VALUE
-        var u = 0.25f
-        while (u <= 0.75f) {
-            val width = g.laneWidthAt(u)
-            assertTrue("lane should never vanish at u=$u", width > 1f)
-            assertTrue("lane widened going away from the rider at u=$u", width <= previous * 1.02f)
-            previous = width
+        val first = g.laneWidthAt(0f)
+        assertTrue("lane should not vanish", first > 1f)
+        var u = 1f / 288f
+        while (u <= 1f) {
+            assertEquals("lane width changed at u=$u", first, g.laneWidthAt(u), 0.01f)
             u += 1f / 288f
         }
     }
 
     @Test
-    fun `the ends of the loop are wider than the far side`() {
-        // Sharper version of the same guard. The ends of the straights sit at middle depth, so
-        // they have to be drawn wider than the far side of the loop. Scaling an ellipse to make
-        // the inner edge does the exact opposite: it pinches the ends to their narrowest.
+    fun `the lane's cross-section stays perpendicular to the direction of travel`() {
+        // The skew this guards against: a depth-dependent camera used to scale the outer and inner
+        // edge of the lane by different amounts at the same travel fraction, tilting the segment
+        // between them off-square by as much as 37 degrees at the ends of the straights. With no
+        // camera, the offset is built along the ellipse's true geometric normal (see
+        // [TrackGeometry.project]) and survives the uniform scale in [TrackGeometry.fit] unsheared,
+        // so it has to come out perpendicular everywhere, not just closer to it.
         val g = fitted(1596f, 762f)
-        assertTrue(g.laneWidthAt(0f) > g.laneWidthAt(0.75f) * 1.3f)
-        assertTrue(g.laneWidthAt(0.5f) > g.laneWidthAt(0.75f) * 1.3f)
-        assertTrue(g.laneWidthAt(0.25f) > g.laneWidthAt(0f) * 1.3f)
+        val step = 1e-4f
+        var u = 0f
+        while (u < 1f) {
+            val outer = g.also { it.project(u, 1f) }.let { it.x to it.y }
+            val inner = g.also { it.project(u, -1f) }.let { it.x to it.y }
+            val cutX = outer.first - inner.first
+            val cutY = outer.second - inner.second
+
+            // No clamping: travel wraps, so u - step and u + step are valid fractions either side
+            // of the seam too, and a wrapped finite difference there is exactly as accurate as one
+            // in the middle of the loop.
+            val back = g.also { it.project(u - step, 0f) }.let { it.x to it.y }
+            val ahead = g.also { it.project(u + step, 0f) }.let { it.x to it.y }
+            val tangentX = ahead.first - back.first
+            val tangentY = ahead.second - back.second
+
+            val cutLen = hypot(cutX, cutY)
+            val tangentLen = hypot(tangentX, tangentY)
+            val cosAngle = (cutX * tangentX + cutY * tangentY) / (cutLen * tangentLen)
+            assertEquals("cut line not square to travel at u=$u", 0f, cosAngle, 0.01f)
+            u += 1f / 288f
+        }
     }
 
     @Test
-    fun `opposite ends of the straights are the same width`() {
-        // Left and right extremes sit at the same depth, so they must project to the same width.
-        val g = fitted(1596f, 762f)
-        assertEquals(g.laneWidthAt(0f), g.laneWidthAt(0.5f), 0.01f)
-    }
-
-    @Test
-    fun `near side of the loop is drawn larger than the far side`() {
-        val g = fitted(1596f, 762f)
-        assertTrue(
-            "perspective should make the near straight wider than the far one",
-            g.laneWidthAt(0.25f) > g.laneWidthAt(0.75f) * 1.5f,
-        )
-    }
-
-    @Test
-    fun `travel runs from the start line toward the rider`() {
-        // Start at the left end of the loop, then come down the near straight before going away
-        // again. The start line is not the leftmost *pixel*, because perspective swings the near
-        // side of the loop wider than the ends; it is the left end of the ground ellipse, which
-        // sits at the same depth as the halfway point.
+    fun `travel runs from the start line across the loop`() {
+        // Start at the left end of the loop, then down to the bottom of the screen before crossing
+        // back up to the top. The start line is not the leftmost *pixel* in general — see the
+        // perpendicularity test above for why a camera used to make that true — but with no camera
+        // it is: the left end of the ground ellipse sits at the same height as the halfway point,
+        // and nothing between them reaches further left or right than either.
         val g = fitted(1596f, 762f)
         g.project(0f, 0f)
         val startX = g.x
@@ -167,13 +170,13 @@ class TrackGeometryTest {
         val halfX = g.x
         val halfY = g.y
         g.project(0.25f, 0f)
-        val nearY = g.y
+        val bottomY = g.y
         g.project(0.75f, 0f)
-        val farY = g.y
+        val topY = g.y
 
-        assertTrue("a quarter lap in should be nearer the rider", nearY > startY)
-        assertTrue("three quarters in should be further away", farY < startY)
-        assertEquals("start and halfway sit at the same depth", startY, halfY, 0.5f)
+        assertTrue("a quarter lap in should be toward the bottom of the screen", bottomY > startY)
+        assertTrue("three quarters in should be toward the top", topY < startY)
+        assertEquals("start and halfway sit level with each other", startY, halfY, 0.5f)
         assertTrue("start line should be on the left", startX < g.infieldCenterX)
         assertTrue("halfway should be on the right", halfX > g.infieldCenterX)
     }

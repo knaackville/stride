@@ -38,19 +38,21 @@ package io.stride.spikes
  * whole change exists to remove, in a subtler form.
  *
  * Every entry keeps the gradient *shape* the original two had, and for the reason
- * `TrackFloorView.buildShaders` gives: translucent, brightest at the near edge, so the far side
- * sinks into whatever is playing underneath and the ring reads as ground receding away from the
- * rider rather than as plastic lying on the glass.
+ * `TrackFloorView.buildLaneShaders` gives: translucent, brightest toward the bottom of the screen,
+ * so the top of the loop sinks into whatever is playing underneath and the ring reads as ground
+ * rather than as plastic lying on the glass.
  */
 object LapPalette {
 
     /**
      * One fill: a three-stop vertical gradient plus the colour of the band's leading edge.
      *
-     * [far] is the top of the view — the far side of the loop — and [near] the bottom, closest to
-     * the rider. Packed ARGB, because composing them here rather than through `android.graphics
-     * .Color` is what keeps this file testable off-device, and because `Color.argb(float,…)` is an
-     * API 26+ overload this console must never reach for.
+     * [far] is the top of the view and [near] the bottom — names left over from when a low camera
+     * made the bottom of the screen the literally nearer side of the loop; [TrackFloorView] is now a
+     * straight overhead view with no near or far side, but the names still describe which stop is
+     * which. Packed ARGB, because composing them here rather than through `android.graphics.Color`
+     * is what keeps this file testable off-device, and because `Color.argb(float,…)` is an API 26+
+     * overload this console must never reach for.
      */
     data class Fill(val far: Int, val mid: Int, val near: Int, val edge: Int)
 

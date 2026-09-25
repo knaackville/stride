@@ -15,14 +15,14 @@ import kotlin.math.min
 
 /**
  * The centrepiece of the NordicTrack/iFit stock treadmill workout screen: a running track drawn as
- * an oval seen in perspective, lying flat like a floor, with a marker showing where the runner
- * currently is around the lap.
+ * an oval seen from directly overhead, lying flat like a floor, with a marker showing where the
+ * runner currently is around the lap.
  *
  * ### The geometry
  *
- * Where the track *is* lives in [TrackGeometry]: a genuine ground plane seen from a low camera
- * rather than a squashed 2D ellipse, with a constant-width lane and a solved fit onto whatever box
- * this view is given. That is the half of this surface that can be checked without a treadmill, so
+ * Where the track *is* lives in [TrackGeometry]: a genuine ground plane with a constant-width lane
+ * and a solved fit onto whatever box this view is given, drawn without a camera rather than as a
+ * squashed 2D ellipse. That is the half of this surface that can be checked without a treadmill, so
  * it is kept separate and unit-tested. This class is the other half: what colour it all is.
  *
  * ### Cost
@@ -30,7 +30,8 @@ import kotlin.math.min
  * Everything that only depends on size is computed once in [rebuildGeometry]: the sample tables,
  * the lane path, the lane markings, the start line, the shaders and the label metrics. [onDraw]
  * allocates nothing; it walks cached arrays and reuses instance Paints, Paths and Shaders, because
- * the host redraws this view on a one-second ticker and animates the marker between those ticks.
+ * the host redraws this view on a poll of its own and animates the marker between those redraws —
+ * see [applyProgress].
  */
 class TrackFloorView(context: Context) : View(context) {
 
@@ -41,10 +42,15 @@ class TrackFloorView(context: Context) : View(context) {
      * see how far you have run" and "you have run nothing" are different claims and a marker parked
      * on the start line makes the second one.
      *
-     * Successive known values are animated rather than jumped, because the feed behind this is a
-     * one-second poll of a distance register and a marker that teleports once a second reads as
-     * broken. A jump of more than [SNAP_FRACTION] of a lap is treated as a seek or a new session
-     * and lands immediately.
+     * Successive known values are animated rather than jumped, because a marker that teleports every
+     * time a fresh reading lands reads as broken. The animation runs over however long it has
+     * actually been since the last one — see [progressAnimDurationMs] — rather than assuming a fixed
+     * cadence: the host's own poll of the distance register slows down whenever the console's state
+     * string briefly is not one it recognises as definitely moving (see `MachineLink`'s poll
+     * scheduler), which used to show up here as the marker holding still for a beat and then racing
+     * through a whole poll interval's worth of distance in a fixed one-second burst to catch up. A
+     * jump of more than [SNAP_FRACTION] of a lap is treated as a seek or a new session and lands
+     * immediately regardless.
      *
      * Written only through [setLapPosition], because it is not independent of [lap].
      */
@@ -55,8 +61,8 @@ class TrackFloorView(context: Context) : View(context) {
      * Which lap the rider is on, 1-based, as [LapTracker] counts them. Selects the colours.
      *
      * Written only through [setLapPosition]. Changing it rebuilds the lane and band shaders, which
-     * is why it must not be driven from anything that ticks — the host redraws this view once a
-     * second and rebuilding three gradients at that rate for a number that changes every few
+     * is why it must not be driven from anything that ticks — the host redraws this view roughly
+     * once a second and rebuilding three gradients at that rate for a number that changes every few
      * minutes would be pure waste.
      */
     var lap: Int = 1
@@ -68,8 +74,8 @@ class TrackFloorView(context: Context) : View(context) {
      * These arrive together from one sample and must be applied together. Setting them separately
      * was wrong in a way that only showed up at the moment this class exists to get right: at a lap
      * boundary progress goes from ~0.99 to ~0.01, which [applyProgress] correctly treats as a small
-     * step forward and animates over a second. If the colour flipped the instant the lap number
-     * did, that second would be spent drawing the *new* lap's colour across ~99% of the loop before
+     * step forward and briefly animates. If the colour flipped the instant the lap number did, that
+     * brief animation would be spent drawing the *new* lap's colour across ~99% of the loop before
      * collapsing it to nothing — a full-loop flash of a colour the rider has not run yet.
      *
      * So a lap change lands rather than animates. The marker skips the last 1% of the old lap,
@@ -133,9 +139,6 @@ class TrackFloorView(context: Context) : View(context) {
         const val CHEQUER_SPAN = 0.014f
         const val CHEQUER_COLUMNS = 6
         const val CHEQUER_ROWS = 2
-
-        /** Matches the host's one-second poll, so the marker arrives just as the next sample lands. */
-        const val PROGRESS_ANIM_MS = 1000L
 
         /** Beyond this much of a lap in one sample it is a seek or a fresh session, not running. */
         const val SNAP_FRACTION = 0.34f
@@ -244,14 +247,19 @@ class TrackFloorView(context: Context) : View(context) {
     private var animFrom = 0f
     private var animSpan = 0f
     private var animStartMs = 0L
+    private var animDurationMs = MAX_PROGRESS_ANIM_MS
+
+    // When [applyProgress] last ran, regardless of which branch it took. The gap between this and
+    // the next call is what [progressAnimDurationMs] paces the next animation over — see [progress].
+    private var lastAppliedAtMs = 0L
 
     private val animTick = object : Runnable {
         override fun run() {
             val elapsed = SystemClock.uptimeMillis() - animStartMs
-            if (elapsed >= PROGRESS_ANIM_MS) {
+            if (elapsed >= animDurationMs) {
                 shownProgress = floorMod(animFrom + animSpan, 1f)
             } else {
-                shownProgress = floorMod(animFrom + animSpan * (elapsed.toFloat() / PROGRESS_ANIM_MS), 1f)
+                shownProgress = floorMod(animFrom + animSpan * (elapsed.toFloat() / animDurationMs), 1f)
                 postOnAnimation(this)
             }
             invalidate()
@@ -375,15 +383,19 @@ class TrackFloorView(context: Context) : View(context) {
     }
 
     /**
-     * Translucent and brightest at the near edge.
+     * Translucent, and brightest toward the bottom of the screen.
      *
-     * A flat opaque band reads as a plastic ring lying on the glass; letting the far side sink into
-     * whatever is playing underneath is what makes it read as ground receding away from the rider.
-     * [LapPalette] holds every colour to that shape, so a lap eight laps in still looks like ground.
+     * A flat opaque band reads as a plastic ring lying on the glass; a vertical light gradient,
+     * fading up toward the top of the loop and letting whatever is playing underneath show through
+     * there, is what keeps it reading as ground rather than a sticker. [LapPalette] names its stops
+     * `near`/`mid`/`far` from when a low camera made the bottom of the screen the literally nearer
+     * side of the loop; with that camera gone the names are legacy, but the lighting they describe
+     * still earns its place on its own as a look. [LapPalette] holds every colour to that shape, so
+     * a lap eight laps in still looks the same way.
      *
      * Rebuilt on a size change *and* on a lap change, and on nothing else. It allocates three
-     * shaders, so a version of this that ran per frame would be allocating in a one-second redraw
-     * loop that is otherwise documented as allocation-free.
+     * shaders, so a version of this that ran per frame would be allocating in a redraw loop that is
+     * otherwise documented as allocation-free.
      */
     private fun buildLaneShaders() {
         // A fit that has not happened yet, or a degenerate one, gives a zero-height gradient — and
@@ -428,8 +440,12 @@ class TrackFloorView(context: Context) : View(context) {
     /**
      * Size the infield copy against the hole it sits in, not against the view.
      *
-     * The hole is measured, and its centre is above the view's centre because perspective pushes
-     * the near straight down. Text placed on the view's centre line sat on the near lane.
+     * The hole is measured, and its centre sits below the view's centre: the marker reaches much
+     * further above its point than its shadow drops beneath it (see [TrackGeometry.PIN_HEAD_OFFSET]
+     * against [TrackGeometry.PIN_SHADOW_DROP]), so fitting the whole drawn shape into the box —
+     * marker included — reserves extra headroom above the lane, and centering that combined shape
+     * pushes the lane, and the hole in the middle of it, down. Text placed on the view's centre line
+     * sat inside the lane rather than the hole.
      */
     private fun layoutLabels() {
         if (!geometryReady || geometry.infieldHeight <= 0f) return
@@ -502,13 +518,13 @@ class TrackFloorView(context: Context) : View(context) {
     }
 
     /**
-     * An upright pin standing on the lane, sized by the lane it stands in.
+     * A map-pin marker standing on the lane, sized by the lane it stands in.
      *
-     * Sizing off the local lane width rather than a constant is what carries the perspective into
-     * the marker: the same pin is large on the near straight and small across the infield, which is
-     * the cue that says the two sides of the loop are at different distances. It does not rotate —
-     * a pin is stuck in the ground, and the earlier version that turned to face travel spent the
-     * far half of every lap lying on its side.
+     * With no camera, [TrackGeometry.laneWidthAt] comes out the same everywhere around the loop, so
+     * this reads off the lane's real width rather than a hardcoded constant purely so the marker
+     * keeps tracking it if that width, [TrackGeometry.DEFAULT_LANE_HALF], or the fit ever changes —
+     * not to carry any depth cue, which a straight overhead view has none of. It does not rotate to
+     * face the direction of travel; it is a location pin, not a compass.
      */
     private fun drawMarker(canvas: Canvas) {
         val p = shownProgress
@@ -546,6 +562,13 @@ class TrackFloorView(context: Context) : View(context) {
      */
     private fun applyProgress(next: Float?, previous: Float?, land: Boolean) {
         removeCallbacks(animTick)
+        val now = SystemClock.uptimeMillis()
+        // Measured before overwriting, and unconditionally — even a call that lands rather than
+        // animates, or that hands back null, is still real evidence of when we last heard from the
+        // host, and the next animation should be paced from here rather than from whenever the last
+        // one actually ran.
+        val sinceLast = now - lastAppliedAtMs
+        lastAppliedAtMs = now
         if (next == null) {
             invalidate()
             return
@@ -560,7 +583,8 @@ class TrackFloorView(context: Context) : View(context) {
         }
         animFrom = shownProgress
         animSpan = delta
-        animStartMs = SystemClock.uptimeMillis()
+        animDurationMs = progressAnimDurationMs(sinceLast)
+        animStartMs = now
         postOnAnimation(animTick)
     }
 
@@ -575,3 +599,33 @@ class TrackFloorView(context: Context) : View(context) {
         return if (r < 0f) r + mod else r
     }
 }
+
+/**
+ * Floor on a computed animation span ([progressAnimDurationMs]).
+ *
+ * Without it, two samples landing back-to-back — the host's poll can speed up to every 500ms —
+ * would animate a whole step of travel in a handful of milliseconds, which reads as a flicker
+ * rather than motion.
+ */
+internal const val MIN_PROGRESS_ANIM_MS = 200L
+
+/**
+ * Ceiling on a computed animation span ([progressAnimDurationMs]).
+ *
+ * A gap this long already sits well inside [LapTracker.DEFAULT_HOLD_MS], so this is not standing in
+ * for that: it only keeps an ordinary slow poll (the host backs off to once every two seconds — see
+ * `MachineLink`'s poll scheduler) from crawling if two of them land in a row, rather than one,
+ * before the marker has a chance to catch up.
+ */
+internal const val MAX_PROGRESS_ANIM_MS = 3000L
+
+/**
+ * How long to animate a marker step, given how long it has actually been since the previous one.
+ *
+ * A top-level function rather than a method, because [TrackFloorView] is a live [android.view.View]
+ * and cannot be instantiated on the JVM to test it — the clamping is what turns a genuine gap in the
+ * host's poll into calm, correctly-paced motion instead of a rushed catch-up, and that arithmetic
+ * can and should be checked without a treadmill. See [TrackFloorView.progress].
+ */
+internal fun progressAnimDurationMs(sinceLastMs: Long): Long =
+    sinceLastMs.coerceIn(MIN_PROGRESS_ANIM_MS, MAX_PROGRESS_ANIM_MS)
