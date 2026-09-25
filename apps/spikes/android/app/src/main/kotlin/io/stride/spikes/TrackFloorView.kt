@@ -8,7 +8,6 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RadialGradient
 import android.graphics.Shader
-import android.os.SystemClock
 import android.view.View
 import kotlin.math.max
 import kotlin.math.min
@@ -286,12 +285,19 @@ class TrackFloorView(context: Context) : View(context) {
      * Ask [positionSource] where the rider is right now, and redraw only if the answer actually
      * changed.
      *
+     * [System.currentTimeMillis] deliberately, not [SystemClock.uptimeMillis]: [LapTracker] stamps
+     * its anchor with the former — the same wall clock `MachineLink` reads its own freshness against
+     * — so asking it with the latter would compare two clocks that can be off by the length of time
+     * this console has been running, which reads as "never anything to show" rather than a visible
+     * bug: every [LapTracker.positionAt] call would find its elapsed time wildly outside the hold
+     * window and answer null forever.
+     *
      * The "did it change" check is what keeps a paused workout — reported speed zero, the same
      * distance extrapolating to the same position tick after tick — from redrawing every 150ms for
      * no visible reason; motion is the case that is supposed to look continuous, not stillness.
      */
     private fun refreshPosition() {
-        val position = positionSource?.invoke(SystemClock.uptimeMillis())
+        val position = positionSource?.invoke(System.currentTimeMillis())
         val nextLap = position?.lap ?: lap
         if (nextLap != lap) {
             lap = nextLap
