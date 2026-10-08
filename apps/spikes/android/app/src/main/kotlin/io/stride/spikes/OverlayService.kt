@@ -225,17 +225,26 @@ class OverlayService : Service() {
          *
          * Named so [railBounds] can work out how tall a full column is from the same numbers
          * [railEntryButton] and [addRail] build it with.
+         *
+         * No padding at the column's ends: every pill already carries its gap above it, and the
+         * whole X22i column only fits between the top of the screen and the bottom bar with none.
          */
         private const val RAIL_PILL_DP = 66f
         private const val RAIL_PILL_GAP_DP = 11f
-        private const val RAIL_PADDING_DP = 10f
+        private const val RAIL_PADDING_DP = 0f
+
+        /** The top strip's distance from the top of the screen, which a full column's first pill lines up with. */
+        private const val TOP_STRIP_INSET_DP = 12f
+
+        /** The least room a full column leaves above the bottom bar. */
+        private const val RAIL_BAR_GAP_DP = 8f
 
         /**
-         * How far in from each edge the top strip and the bottom bar keep their controls.
+         * How far in from each edge the top strip and the bottom bar's middle controls sit.
          *
-         * The columns run the full height of the screen when every pill fits, so they pass beside
-         * both bars rather than stopping between them. Anything on either bar inside this inset
-         * would sit under a pill.
+         * A column that fits runs from the top of the screen down to the bottom bar, past the ends
+         * of the top strip, and each column's show/hide toggle sits in the bar directly beneath it.
+         * Anything inside this inset would be under a pill or in a toggle's place.
          */
         private const val CHROME_SIDE_CLEARANCE_DP = RAIL_EDGE_DP + RAIL_WIDTH_DP + 18f
 
@@ -333,9 +342,6 @@ class OverlayService : Service() {
         /** Fallback top inset for the floor when the metric strip is collapsed away. */
         private const val FLOOR_TOP_FALLBACK_DP = 72f
 
-        /** Diameter of the circular corner toggles, and the room the rails must leave them. */
-        private const val CORNER_SIZE_DP = 84f
-
         /** Diameter of the goal ring window. */
         private const val RING_SIZE_DP = 260f
 
@@ -364,7 +370,10 @@ class OverlayService : Service() {
          * notice, so matching the padding alone left the handle sitting 25 px low.
          */
         private const val HIDE_BUTTON_WIDTH_DP = 150f
-        private const val BAR_SIDE_PADDING_DP = CHROME_SIDE_CLEARANCE_DP
+        private const val BAR_SIDE_PADDING_DP = RAIL_EDGE_DP
+
+        /** Where Hide overlay ends up from the right edge, past the speed toggle: the handle goes here too. */
+        private const val HIDE_BUTTON_END_INSET_DP = CHROME_SIDE_CLEARANCE_DP
         private const val BAR_BOTTOM_PADDING_DP = 10f
         private const val HANDLE_BOTTOM_INSET_DP = 39f
 
@@ -522,8 +531,6 @@ class OverlayService : Service() {
     private var lastKnownLap = 1
     private var goalRingView: GoalRingView? = null
     private var goalRingRoot: View? = null
-    private var cornerLeftView: View? = null
-    private var cornerRightView: View? = null
     private var nowPlayingRoot: View? = null
     private var nowPlayingArt: ImageView? = null
     private var nowPlayingTitle: TextView? = null
@@ -1447,7 +1454,6 @@ class OverlayService : Service() {
         else addCollapsedMetricsToggle()
         addTrackFloor()
         addGoalRing()
-        addCornerControls()
         addNowPlaying()
         addBottomBar()
         // After the bottom bar, not before it: a column that fits runs down past the bar's top edge,
@@ -1581,7 +1587,7 @@ class OverlayService : Service() {
         // for this corner, and it puts goal and media on the same baseline with the track floor
         // running between them.
         val params = baseParams(dp(RING_SIZE_DP), dp(RING_SIZE_DP), Gravity.BOTTOM or Gravity.END)
-        params.x = dp(if (railsVisible) CHROME_SIDE_CLEARANCE_DP + CORNER_SIZE_DP + 24f else CORNER_SIZE_DP + 50f)
+        params.x = dp(if (railsVisible) CHROME_SIDE_CLEARANCE_DP else RAIL_EDGE_DP)
         params.y = (hudBottomPx.takeIf { it > 0 } ?: dp(HUD_BOTTOM_ESTIMATE_DP)) + dp(18f)
         params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         try {
@@ -1607,59 +1613,38 @@ class OverlayService : Service() {
     }
 
     /**
-     * The circular incline and speed buttons in the bottom corners.
+     * The incline and speed buttons at the two ends of the bottom bar, each beneath its own column.
      *
      * Stock opens a rotary fine-adjust dial from these. Stride cannot command the machine, so a
      * dial would be a control that does nothing; they show and hide their own quick-pick column
      * instead, which is the useful half of what stock does with that corner.
+     *
+     * In the bar rather than floating above it: up there they sat in the middle of the screen, over
+     * whatever was playing. Column-wide so each reads as the foot of the column it controls.
      */
-    private fun addCornerControls() {
-        cornerLeftView = addCornerControl(
-            icon = R.drawable.ic_metric_incline,
-            accent = amber,
-            gravity = Gravity.START or Gravity.BOTTOM,
-            description = if (railsVisible) "Hide incline and speed columns" else "Show incline and speed columns",
-        )
-        cornerRightView = addCornerControl(
-            icon = R.drawable.ic_metric_speed,
-            accent = cyan,
-            gravity = Gravity.END or Gravity.BOTTOM,
-            description = if (railsVisible) "Hide incline and speed columns" else "Show incline and speed columns",
-        )
-    }
-
-    private fun addCornerControl(icon: Int, accent: Int, gravity: Int, description: String): View? {
-        val size = dp(CORNER_SIZE_DP)
-        val button = ImageView(this).apply {
+    private fun railToggleButton(icon: Int, accent: Int): View {
+        val description = if (railsVisible) "Hide incline and speed columns" else "Show incline and speed columns"
+        return ImageView(this).apply {
             setImageResource(icon)
             imageTintList = ColorStateList.valueOf(
                 if (railsVisible) Color.rgb(8, 14, 26) else Color.argb(235, 226, 236, 252),
             )
-            val inset = dp(22f)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            val inset = dp(20f)
             setPadding(inset, inset, inset, inset)
             background = rippleRounded(
                 color = if (railsVisible) accent else Color.argb(226, 15, 22, 40),
-                radius = 42f,
+                radius = 34f,
                 strokeColor = if (railsVisible) null else Color.argb(150, 62, 76, 116),
             )
             contentDescription = description
-            elevation = dp(10f).toFloat()
+            isFocusable = true
             setOnClickListener {
                 railsVisible = !railsVisible
                 rebuildChromeViews()
                 lastGesture = if (railsVisible) "quick picks shown" else "quick picks hidden"
             }
-        }
-        val root = FrameLayout(this).apply { addView(button, FrameLayout.LayoutParams(size, size)) }
-        val params = baseParams(size, size, gravity)
-        // Beside the column rather than under it: a column that fits runs down past this corner.
-        params.x = dp(if (railsVisible) CHROME_SIDE_CLEARANCE_DP else 34f)
-        params.y = (hudBottomPx.takeIf { it > 0 } ?: dp(HUD_BOTTOM_ESTIMATE_DP)) + dp(18f)
-        return try {
-            windowManager.addView(root, params)
-            root
-        } catch (_: Exception) {
-            null
+            layoutParams = LinearLayout.LayoutParams(dp(RAIL_WIDTH_DP), dp(80f))
         }
     }
 
@@ -1735,7 +1720,7 @@ class OverlayService : Service() {
             ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM or Gravity.START,
         )
-        params.x = dp(if (railsVisible) CHROME_SIDE_CLEARANCE_DP + CORNER_SIZE_DP + 24f else CORNER_SIZE_DP + 50f)
+        params.x = dp(if (railsVisible) CHROME_SIDE_CLEARANCE_DP else RAIL_EDGE_DP)
         params.y = (hudBottomPx.takeIf { it > 0 } ?: dp(HUD_BOTTOM_ESTIMATE_DP)) + dp(18f)
         try {
             windowManager.addView(root, params)
@@ -1803,7 +1788,7 @@ class OverlayService : Service() {
     private fun removeChromeViews() {
         listOfNotNull(
             topMetricsView, leftInclineView, rightSpeedView, bottomBarView,
-            trackFloorRoot, goalRingRoot, cornerLeftView, cornerRightView, nowPlayingRoot,
+            trackFloorRoot, goalRingRoot, nowPlayingRoot,
         ).forEach { safeRemove(it) }
         topMetricsView = null
         leftInclineView = null
@@ -1815,8 +1800,6 @@ class OverlayService : Service() {
         trackFloorView = null
         goalRingRoot = null
         goalRingView = null
-        cornerLeftView = null
-        cornerRightView = null
         clearNowPlayingRefs()
         elapsedHeroView = null
         primaryTransportButton = null
@@ -2316,16 +2299,17 @@ class OverlayService : Service() {
      * the transport controls is not.
      */
     private fun railBounds(entryCount: Int): Pair<Int, Int> {
-        val screenHeight = resources.displayMetrics.heightPixels
-        // A column that fits on the screen whole is centred on it and never scrolls, running past
-        // both bars; the bars keep their controls clear of it (see [CHROME_SIDE_CLEARANCE_DP]).
-        // Hunting for 15% by scrolling is the thing this is here to stop. Only a column too long
-        // for the screen -- 1% incline steps on a 40% trainer -- falls back to the scrolling gap
+        val screenHeight = realScreenHeight()
+        val bottom = if (hudBottomPx > 0) hudBottomPx else dp(HUD_BOTTOM_ESTIMATE_DP)
+        // A column that fits whole never scrolls. It starts level with the top strip, passing beside
+        // it (the strip keeps clear, see [CHROME_SIDE_CLEARANCE_DP]), and stops above the bottom
+        // bar. Hunting for 15% by scrolling is the thing this is here to stop. Only a column too
+        // long for that -- 1% incline steps on a 40% trainer -- falls back to the scrolling gap
         // between the bars below.
         val fullHeight = dp(RAIL_PADDING_DP * 2 + entryCount * (RAIL_PILL_DP + RAIL_PILL_GAP_DP))
-        val edgeGap = dp(12f)
-        if (entryCount > 0 && fullHeight <= screenHeight - 2 * edgeGap) {
-            return (screenHeight - fullHeight) / 2 to fullHeight
+        val fullTop = (dp(TOP_STRIP_INSET_DP) - dp(RAIL_PILL_GAP_DP)).coerceAtLeast(0)
+        if (entryCount > 0 && fullTop + fullHeight <= screenHeight - bottom - dp(RAIL_BAR_GAP_DP)) {
+            return fullTop to fullHeight
         }
         val measuredTop = hudTopPx
         val top = when {
@@ -2333,15 +2317,25 @@ class OverlayService : Service() {
             metricsVisible -> dp(HUD_TOP_ESTIMATE_DP)
             else -> dp(72f)
         }
-        val bottom = if (hudBottomPx > 0) hudBottomPx else dp(HUD_BOTTOM_ESTIMATE_DP)
         val gap = dp(12f)
         val y = top + gap
-        // The circular quick-pick toggles live in the same columns as the rails, just above the
-        // bottom bar. Without reserving their footprint the last pill slides underneath one and
-        // becomes unreadable and untappable at the same time.
-        val corners = dp(CORNER_SIZE_DP + 18f + 12f)
-        val height = (screenHeight - y - bottom - corners - gap).coerceAtLeast(dp(120f))
+        val height = (screenHeight - y - bottom - gap).coerceAtLeast(dp(120f))
         return y to height
+    }
+
+    /**
+     * The panel's full height, in the coordinates these overlay windows are placed in.
+     *
+     * Not `displayMetrics.heightPixels`: on an X22i that reports 1026 of the panel's 1080 rows,
+     * leaving out the space system bars would take even though none is showing, while a window at
+     * [Gravity.BOTTOM] still sits on the real bottom edge. A full column measured against the short
+     * figure looked 54px too tall to fit and fell back to scrolling.
+     */
+    @Suppress("DEPRECATION")
+    private fun realScreenHeight(): Int {
+        val metrics = android.util.DisplayMetrics()
+        windowManager.defaultDisplay.getRealMetrics(metrics)
+        return metrics.heightPixels.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
     }
 
     /** Re-place the rails once the top or bottom chrome reports its true height. */
@@ -3031,6 +3025,9 @@ class OverlayService : Service() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
+        navCluster.addView(railToggleButton(R.drawable.ic_metric_incline, amber).apply {
+            (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(CHROME_SIDE_CLEARANCE_DP - RAIL_EDGE_DP - RAIL_WIDTH_DP)
+        })
         navCluster.addView(bottomNavButton("Back", "‹", width = dp(104f)) {
             navigateOrExplain("Back") { it.goBack() }
         })
@@ -3052,8 +3049,9 @@ class OverlayService : Service() {
         }
         edgeCluster.addView(bottomNavButton("Menu", "⋯", width = dp(104f)) { showMoreMenu() })
         edgeCluster.addView(bottomNavButton("Hide overlay", "⌄", width = dp(HIDE_BUTTON_WIDTH_DP)) { hideChrome() }.apply {
-            (layoutParams as LinearLayout.LayoutParams).marginEnd = 0
+            (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(CHROME_SIDE_CLEARANCE_DP - RAIL_EDGE_DP - RAIL_WIDTH_DP)
         })
+        edgeCluster.addView(railToggleButton(R.drawable.ic_metric_speed, cyan))
         row.addView(
             edgeCluster,
             FrameLayout.LayoutParams(
@@ -3283,7 +3281,7 @@ class OverlayService : Service() {
             dp(HANDLE_HEIGHT_DP),
             Gravity.BOTTOM or Gravity.END,
         )
-        params.x = dp(BAR_SIDE_PADDING_DP)
+        params.x = dp(HIDE_BUTTON_END_INSET_DP)
         params.y = dp(HANDLE_BOTTOM_INSET_DP)
         try {
             windowManager.addView(handle, params)
