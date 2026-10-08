@@ -151,3 +151,42 @@ class ConsoleFollowUpTest {
         )
     }
 }
+
+/** A second press of the console's Stop button, which ends the workout it paused. */
+class ConsoleEndedWorkoutTest {
+
+    @Test
+    fun `the console going from paused to results ends a paused session`() {
+        assertEquals(true, consoleEndedWorkout("PAUSED", "WORKOUT_RESULTS", WorkoutSession.State.PAUSED))
+    }
+
+    @Test
+    fun `the console going from paused to idle ends a paused session`() {
+        assertEquals(true, consoleEndedWorkout("PAUSED", "IDLE", WorkoutSession.State.PAUSED))
+    }
+
+    /** Nothing seen before this reading, or forgotten across a dropped link: not an edge. */
+    @Test
+    fun `a first reading of results is not an end`() {
+        assertEquals(false, consoleEndedWorkout(null, "WORKOUT_RESULTS", WorkoutSession.State.PAUSED))
+    }
+
+    /** Stride's own End already walks the console to results; that must not end anything twice. */
+    @Test
+    fun `results behind a session that is not paused is not an end`() {
+        for (state in WorkoutSession.State.entries.filter { it != WorkoutSession.State.PAUSED }) {
+            assertEquals(state.name, false, consoleEndedWorkout("PAUSED", "WORKOUT_RESULTS", state))
+        }
+    }
+
+    /** Only from pause. A running belt going straight to results is the first press's business. */
+    @Test
+    fun `results straight from a running workout is not this rule`() {
+        assertEquals(false, consoleEndedWorkout("WORKOUT", "WORKOUT_RESULTS", WorkoutSession.State.PAUSED))
+    }
+
+    @Test
+    fun `staying paused is not an end`() {
+        assertEquals(false, consoleEndedWorkout("PAUSED", "PAUSED", WorkoutSession.State.PAUSED))
+    }
+}

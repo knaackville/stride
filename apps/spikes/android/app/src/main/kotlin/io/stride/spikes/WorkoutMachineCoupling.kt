@@ -66,6 +66,15 @@ object WorkoutMachineCoupling {
     private var beltMoving: Boolean? = null
 
     /**
+     * The last state name the console reported, kept beside [beltMoving] and forgotten with it.
+     *
+     * Moving or not is too coarse for one edge: a second press of the console's Stop button takes
+     * it from PAUSED to the end of its workout, and both of those are "not moving". See
+     * [consoleEndedWorkout].
+     */
+    private var consoleStateName: String? = null
+
+    /**
      * Set while *this thread* is making a transition that follows the machine rather than driving
      * it.
      *
@@ -156,12 +165,21 @@ object WorkoutMachineCoupling {
             return
         }
         val moving = GlassOsClient.ConsoleState.beltMayBeMoving(consoleState) ?: return
-        val previous = synchronized(this) {
-            val was = beltMoving
+        val (previous, previousName) = synchronized(this) {
+            val was = beltMoving to consoleStateName
             beltMoving = moving
+            consoleStateName = consoleState
             was
         }
+        if (previousName != consoleState) Log.i(TAG, "console state $previousName -> $consoleState")
         try {
+            if (consoleEndedWorkout(previousName, consoleState, WorkoutSession.state)) {
+                // Adopted like the pause, but an end is never suppressed on its way to the machine
+                // (see onTransition): this gets the same stop and settle as the End button.
+                Log.i(TAG, "console ended its workout from pause; ending the session to match")
+                adopt { WorkoutSession.stop() }
+                return
+            }
             when (consoleFollowUp(previous, moving, WorkoutSession.state)) {
                 ConsoleFollowUp.NOTHING -> return
 
@@ -182,7 +200,10 @@ object WorkoutMachineCoupling {
 
     /** Forget what the console was doing, so the next reading starts a fresh edge. */
     fun forgetConsole() {
-        synchronized(this) { beltMoving = null }
+        synchronized(this) {
+            beltMoving = null
+            consoleStateName = null
+        }
     }
 
     /**
@@ -648,3 +669,24 @@ internal fun consoleFollowUp(
         else -> ConsoleFollowUp.NOTHING
     }
 }
+
+/**
+ * Whether the console has ended, on its own, a workout Stride is holding paused.
+ *
+ * A first press of the console's Stop button pauses ([consoleFollowUp]); pressing it again ends the
+ * workout, and the console leaves PAUSED for WORKOUT_RESULTS (or IDLE). Both of those read as "not
+ * moving", so the moving/not-moving edge never saw it, and the rider had to finish on the screen.
+ *
+ * Only from a PAUSED reading Stride actually saw, to an end reading, while the session is PAUSED.
+ * A first reading (nothing seen before, or forgotten across a dropped link) is never an edge, for
+ * the same reason it is not one in [consoleFollowUp]. And a console that gave up on a long pause
+ * by itself lands here too, which is right: it will not resume that workout either.
+ */
+internal fun consoleEndedWorkout(
+    previousName: String?,
+    name: String?,
+    state: WorkoutSession.State,
+): Boolean =
+    state == WorkoutSession.State.PAUSED &&
+        previousName == "PAUSED" &&
+        (name == "WORKOUT_RESULTS" || name == "IDLE")
