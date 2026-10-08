@@ -217,6 +217,37 @@ class OverlayService : Service() {
         /** Width of a quick-pick column. */
         private const val RAIL_WIDTH_DP = 132f
 
+        /** Gap between a quick-pick column and its screen edge. */
+        private const val RAIL_EDGE_DP = 30f
+
+        /**
+         * One pill's height, the gap above it, and the column's own top and bottom padding.
+         *
+         * Named so [railBounds] can work out how tall a full column is from the same numbers
+         * [railEntryButton] and [addRail] build it with.
+         */
+        private const val RAIL_PILL_DP = 66f
+        private const val RAIL_PILL_GAP_DP = 11f
+        private const val RAIL_PADDING_DP = 10f
+
+        /**
+         * How far in from each edge the top strip and the bottom bar keep their controls.
+         *
+         * The columns run the full height of the screen when every pill fits, so they pass beside
+         * both bars rather than stopping between them. Anything on either bar inside this inset
+         * would sit under a pill.
+         */
+        private const val CHROME_SIDE_CLEARANCE_DP = RAIL_EDGE_DP + RAIL_WIDTH_DP + 18f
+
+        /**
+         * The slowest speed pill the column offers.
+         *
+         * The ladder otherwise carries the machine's own minimum (0.5 mph on an X22i) as its bottom
+         * rung. Nobody walks at 0.5, and leaving it off makes the speed column exactly as long as
+         * the incline one, so the two line up row for row.
+         */
+        private const val SPEED_RAIL_FLOOR_MPH = 1.0
+
         /**
          * The quick picks shown when the machine has not published its own.
          *
@@ -333,7 +364,7 @@ class OverlayService : Service() {
          * notice, so matching the padding alone left the handle sitting 25 px low.
          */
         private const val HIDE_BUTTON_WIDTH_DP = 150f
-        private const val BAR_SIDE_PADDING_DP = 22f
+        private const val BAR_SIDE_PADDING_DP = CHROME_SIDE_CLEARANCE_DP
         private const val BAR_BOTTOM_PADDING_DP = 10f
         private const val HANDLE_BOTTOM_INSET_DP = 39f
 
@@ -1416,13 +1447,16 @@ class OverlayService : Service() {
         else addCollapsedMetricsToggle()
         addTrackFloor()
         addGoalRing()
+        addCornerControls()
+        addNowPlaying()
+        addBottomBar()
+        // After the bottom bar, not before it: a column that fits runs down past the bar's top edge,
+        // and windows stack in the order they are added, so the bar would otherwise cover its last
+        // pill.
         if (railsVisible) {
             addInclineRail()
             addSpeedRail()
         }
-        addCornerControls()
-        addNowPlaying()
-        addBottomBar()
         updateWorkoutUi()
         scheduleElapsedTicker()
         // Restart the machine ticker against the freshly built views. removeCallbacks first so a
@@ -1547,7 +1581,7 @@ class OverlayService : Service() {
         // for this corner, and it puts goal and media on the same baseline with the track floor
         // running between them.
         val params = baseParams(dp(RING_SIZE_DP), dp(RING_SIZE_DP), Gravity.BOTTOM or Gravity.END)
-        params.x = dp(if (railsVisible) RAIL_WIDTH_DP + 24f else CORNER_SIZE_DP + 50f)
+        params.x = dp(if (railsVisible) CHROME_SIDE_CLEARANCE_DP + CORNER_SIZE_DP + 24f else CORNER_SIZE_DP + 50f)
         params.y = (hudBottomPx.takeIf { it > 0 } ?: dp(HUD_BOTTOM_ESTIMATE_DP)) + dp(18f)
         params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         try {
@@ -1618,7 +1652,8 @@ class OverlayService : Service() {
         }
         val root = FrameLayout(this).apply { addView(button, FrameLayout.LayoutParams(size, size)) }
         val params = baseParams(size, size, gravity)
-        params.x = dp(34f)
+        // Beside the column rather than under it: a column that fits runs down past this corner.
+        params.x = dp(if (railsVisible) CHROME_SIDE_CLEARANCE_DP else 34f)
         params.y = (hudBottomPx.takeIf { it > 0 } ?: dp(HUD_BOTTOM_ESTIMATE_DP)) + dp(18f)
         return try {
             windowManager.addView(root, params)
@@ -1700,7 +1735,7 @@ class OverlayService : Service() {
             ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM or Gravity.START,
         )
-        params.x = dp(if (railsVisible) RAIL_WIDTH_DP + 24f else CORNER_SIZE_DP + 50f)
+        params.x = dp(if (railsVisible) CHROME_SIDE_CLEARANCE_DP + CORNER_SIZE_DP + 24f else CORNER_SIZE_DP + 50f)
         params.y = (hudBottomPx.takeIf { it > 0 } ?: dp(HUD_BOTTOM_ESTIMATE_DP)) + dp(18f)
         try {
             windowManager.addView(root, params)
@@ -1804,7 +1839,7 @@ class OverlayService : Service() {
     private fun addTopMetrics() {
         publishTopInset(dp(HUD_TOP_ESTIMATE_DP))
         val root = FrameLayout(this).apply {
-            setPadding(dp(142f), dp(12f), dp(142f), dp(0f))
+            setPadding(dp(CHROME_SIDE_CLEARANCE_DP), dp(12f), dp(CHROME_SIDE_CLEARANCE_DP), dp(0f))
             addOnLayoutChangeListener { view, _, top, _, bottom, _, _, _, _ ->
                 val laidOutHeight = bottom - top
                 if (laidOutHeight > 0) publishTopInset(laidOutHeight) else publishInsetFromLayout(view, top = true)
@@ -2231,7 +2266,11 @@ class OverlayService : Service() {
             } ?: SPEED_LADDER,
             floor = floor,
             ceiling = ceiling,
-        )
+        ).let { entries ->
+            // Never down to nothing: a machine whose whole range sits below the floor keeps the
+            // column it would have had.
+            entries.filter { (it.toDoubleOrNull() ?: 0.0) >= SPEED_RAIL_FLOOR_MPH }.ifEmpty { entries }
+        }
         val binding = addRail(
             accent = cyan,
             entries = presets,
@@ -2276,8 +2315,18 @@ class OverlayService : Service() {
      * forced to extend under the bottom bar. A rail that has to scroll is fine; a rail that hides
      * the transport controls is not.
      */
-    private fun railBounds(): Pair<Int, Int> {
+    private fun railBounds(entryCount: Int): Pair<Int, Int> {
         val screenHeight = resources.displayMetrics.heightPixels
+        // A column that fits on the screen whole is centred on it and never scrolls, running past
+        // both bars; the bars keep their controls clear of it (see [CHROME_SIDE_CLEARANCE_DP]).
+        // Hunting for 15% by scrolling is the thing this is here to stop. Only a column too long
+        // for the screen -- 1% incline steps on a 40% trainer -- falls back to the scrolling gap
+        // between the bars below.
+        val fullHeight = dp(RAIL_PADDING_DP * 2 + entryCount * (RAIL_PILL_DP + RAIL_PILL_GAP_DP))
+        val edgeGap = dp(12f)
+        if (entryCount > 0 && fullHeight <= screenHeight - 2 * edgeGap) {
+            return (screenHeight - fullHeight) / 2 to fullHeight
+        }
         val measuredTop = hudTopPx
         val top = when {
             measuredTop > 0 -> measuredTop
@@ -2297,8 +2346,9 @@ class OverlayService : Service() {
 
     /** Re-place the rails once the top or bottom chrome reports its true height. */
     private fun repositionRails() {
-        val (y, height) = railBounds()
-        listOfNotNull(leftInclineView, rightSpeedView).forEach { rail ->
+        listOfNotNull(inclineRail, speedRail).forEach { binding ->
+            val rail = binding.scroll
+            val (y, height) = railBounds(binding.buttons.size)
             val lp = rail.layoutParams as? WindowManager.LayoutParams ?: return@forEach
             if (lp.y == y && lp.height == height) return@forEach
             lp.y = y
@@ -2336,7 +2386,7 @@ class OverlayService : Service() {
         pending: PendingSetpoint,
         onPick: (Double) -> Unit,
     ): RailBinding? {
-        val (railTop, railHeight) = railBounds()
+        val (railTop, railHeight) = railBounds(entries.size)
         var railSettling = false
         var ignoreClicksUntilMs = 0L
         val clearSettling = Runnable { railSettling = false }
@@ -2359,7 +2409,7 @@ class OverlayService : Service() {
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             this.gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(0, dp(10f), 0, dp(10f))
+            setPadding(0, dp(RAIL_PADDING_DP), 0, dp(RAIL_PADDING_DP))
         }
         entries.forEach { entry ->
             val active = currentEntry == entry
@@ -2439,7 +2489,7 @@ class OverlayService : Service() {
             addView(content)
         }
         val params = baseParams(dp(RAIL_WIDTH_DP), railHeight, gravity)
-        params.x = dp(30f)
+        params.x = dp(RAIL_EDGE_DP)
         params.y = railTop
         binding.applied = currentEntry
         binding.isSettling = { railSettling }
@@ -2611,10 +2661,10 @@ class OverlayService : Service() {
             contentDescription = label
             styleRailEntry(this, accent, mark, enabled)
             setOnClickListener { onClick() }
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(66f))
-            lp.topMargin = dp(11f)
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(RAIL_PILL_DP))
+            lp.topMargin = dp(RAIL_PILL_GAP_DP)
             layoutParams = lp
-            minimumHeight = dp(66f)
+            minimumHeight = dp(RAIL_PILL_DP)
         }
 
     /**
@@ -2695,7 +2745,7 @@ class OverlayService : Service() {
             lp.bottomMargin = (if (hudBottomPx > 0) hudBottomPx else dp(HUD_BOTTOM_ESTIMATE_DP)) + dp(16f)
             // Clear of the speed rail, so the sheet reads as sitting beside the column rather than
             // dropped on top of it.
-            lp.marginEnd = dp(30f) + dp(RAIL_WIDTH_DP) + dp(18f)
+            lp.marginEnd = dp(CHROME_SIDE_CLEARANCE_DP)
             layoutParams = lp
         }
 
