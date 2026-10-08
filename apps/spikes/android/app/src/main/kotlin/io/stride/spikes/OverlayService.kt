@@ -507,7 +507,9 @@ class OverlayService : Service() {
     private val edgeViews = mutableListOf<View>()
     private var chromeVisible: Boolean = true
     private var metricsVisible: Boolean = true
-    private var railsVisible: Boolean = true
+    /** Each column has its own toggle under it, and hides independently of the other. */
+    private var inclineRailVisible: Boolean = true
+    private var speedRailVisible: Boolean = true
     private var trackFloorView: TrackFloorView? = null
     private var trackFloorRoot: View? = null
 
@@ -1459,10 +1461,8 @@ class OverlayService : Service() {
         // After the bottom bar, not before it: a column that fits runs down past the bar's top edge,
         // and windows stack in the order they are added, so the bar would otherwise cover its last
         // pill.
-        if (railsVisible) {
-            addInclineRail()
-            addSpeedRail()
-        }
+        if (inclineRailVisible) addInclineRail()
+        if (speedRailVisible) addSpeedRail()
         updateWorkoutUi()
         scheduleElapsedTicker()
         // Restart the machine ticker against the freshly built views. removeCallbacks first so a
@@ -1527,7 +1527,8 @@ class OverlayService : Service() {
         val screenHeight = resources.displayMetrics.heightPixels
         // The rails are windows of their own and the floor must not run under them; with the rails
         // away the only things out at the edges are the corner buttons, which sit below the oval.
-        val side = if (railsVisible) dp(30f + RAIL_WIDTH_DP + FLOOR_SIDE_GAP_DP) else dp(FLOOR_SIDE_GAP_DP)
+        // Either column keeps the floor in from both edges, so the track stays centred under the strip.
+        val side = if (inclineRailVisible || speedRailVisible) dp(30f + RAIL_WIDTH_DP + FLOOR_SIDE_GAP_DP) else dp(FLOOR_SIDE_GAP_DP)
         val top = when {
             hudTopPx > 0 -> hudTopPx
             metricsVisible -> dp(HUD_TOP_ESTIMATE_DP)
@@ -1587,7 +1588,7 @@ class OverlayService : Service() {
         // for this corner, and it puts goal and media on the same baseline with the track floor
         // running between them.
         val params = baseParams(dp(RING_SIZE_DP), dp(RING_SIZE_DP), Gravity.BOTTOM or Gravity.END)
-        params.x = dp(if (railsVisible) CHROME_SIDE_CLEARANCE_DP else RAIL_EDGE_DP)
+        params.x = dp(if (speedRailVisible) CHROME_SIDE_CLEARANCE_DP else RAIL_EDGE_DP)
         params.y = (hudBottomPx.takeIf { it > 0 } ?: dp(HUD_BOTTOM_ESTIMATE_DP)) + dp(18f)
         params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         try {
@@ -1622,27 +1623,28 @@ class OverlayService : Service() {
      * In the bar rather than floating above it: up there they sat in the middle of the screen, over
      * whatever was playing. Column-wide so each reads as the foot of the column it controls.
      */
-    private fun railToggleButton(icon: Int, accent: Int): View {
-        val description = if (railsVisible) "Hide incline and speed columns" else "Show incline and speed columns"
+    private fun railToggleButton(icon: Int, accent: Int, name: String, isVisible: () -> Boolean, toggle: () -> Unit): View {
+        val shown = isVisible()
+        val description = if (shown) "Hide $name column" else "Show $name column"
         return ImageView(this).apply {
             setImageResource(icon)
             imageTintList = ColorStateList.valueOf(
-                if (railsVisible) Color.rgb(8, 14, 26) else Color.argb(235, 226, 236, 252),
+                if (shown) Color.rgb(8, 14, 26) else Color.argb(235, 226, 236, 252),
             )
             scaleType = ImageView.ScaleType.FIT_CENTER
             val inset = dp(20f)
             setPadding(inset, inset, inset, inset)
             background = rippleRounded(
-                color = if (railsVisible) accent else Color.argb(226, 15, 22, 40),
+                color = if (shown) accent else Color.argb(226, 15, 22, 40),
                 radius = 34f,
-                strokeColor = if (railsVisible) null else Color.argb(150, 62, 76, 116),
+                strokeColor = if (shown) null else Color.argb(150, 62, 76, 116),
             )
             contentDescription = description
             isFocusable = true
             setOnClickListener {
-                railsVisible = !railsVisible
+                toggle()
                 rebuildChromeViews()
-                lastGesture = if (railsVisible) "quick picks shown" else "quick picks hidden"
+                lastGesture = if (isVisible()) "$name quick picks shown" else "$name quick picks hidden"
             }
             layoutParams = LinearLayout.LayoutParams(dp(RAIL_WIDTH_DP), dp(80f))
         }
@@ -1720,7 +1722,7 @@ class OverlayService : Service() {
             ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM or Gravity.START,
         )
-        params.x = dp(if (railsVisible) CHROME_SIDE_CLEARANCE_DP else RAIL_EDGE_DP)
+        params.x = dp(if (inclineRailVisible) CHROME_SIDE_CLEARANCE_DP else RAIL_EDGE_DP)
         params.y = (hudBottomPx.takeIf { it > 0 } ?: dp(HUD_BOTTOM_ESTIMATE_DP)) + dp(18f)
         try {
             windowManager.addView(root, params)
@@ -3025,7 +3027,13 @@ class OverlayService : Service() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        navCluster.addView(railToggleButton(R.drawable.ic_metric_incline, amber).apply {
+        navCluster.addView(railToggleButton(
+            R.drawable.ic_metric_incline,
+            amber,
+            name = "incline",
+            isVisible = { inclineRailVisible },
+            toggle = { inclineRailVisible = !inclineRailVisible },
+        ).apply {
             (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(CHROME_SIDE_CLEARANCE_DP - RAIL_EDGE_DP - RAIL_WIDTH_DP)
         })
         navCluster.addView(bottomNavButton("Back", "‹", width = dp(104f)) {
@@ -3051,7 +3059,13 @@ class OverlayService : Service() {
         edgeCluster.addView(bottomNavButton("Hide overlay", "⌄", width = dp(HIDE_BUTTON_WIDTH_DP)) { hideChrome() }.apply {
             (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(CHROME_SIDE_CLEARANCE_DP - RAIL_EDGE_DP - RAIL_WIDTH_DP)
         })
-        edgeCluster.addView(railToggleButton(R.drawable.ic_metric_speed, cyan))
+        edgeCluster.addView(railToggleButton(
+            R.drawable.ic_metric_speed,
+            cyan,
+            name = "speed",
+            isVisible = { speedRailVisible },
+            toggle = { speedRailVisible = !speedRailVisible },
+        ))
         row.addView(
             edgeCluster,
             FrameLayout.LayoutParams(
