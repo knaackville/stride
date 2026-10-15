@@ -191,6 +191,55 @@ void main() {
     expect(find.text('Show apps'), findsOneWidget);
   });
 
+  /// On the console a Home intent pauses and resumes the Activity, and the
+  /// resume used to drop the reveal Home had just made, so the grid only
+  /// flashed. A Home reveal now outlives that resume. The timeout still ends
+  /// it.
+  testWidgets('Home keeps the grid up through the resume it causes', (
+    tester,
+  ) async {
+    floor = <String, Object?>{'on': true, 'visible': true, 'backdrop': true};
+    final key = GlobalKey<LauncherHomeState>();
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LauncherHome(
+          key: key,
+          profiles: ProfileStore(storage: _MemoryStorage()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Show apps'), findsOneWidget);
+
+    key.currentState!.resetToLauncherRoot();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+    expect(find.text('Pinned apps'), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 61));
+    await tester.pumpAndSettle();
+    expect(find.text('Show apps'), findsOneWidget);
+  });
+
+  /// A tap reveal is still dropped by coming back to Stride, as before.
+  testWidgets('a tap reveal is still dropped on resume', (tester) async {
+    floor = <String, Object?>{'on': true, 'visible': true, 'backdrop': true};
+    await pumpLauncher(tester);
+
+    await tester.tap(find.text('Show apps'));
+    await tester.pumpAndSettle();
+    expect(find.text('Pinned apps'), findsOneWidget);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+    expect(find.text('Show apps'), findsOneWidget);
+  });
+
   /// The overlay's Home button is the second way out, and the only one that
   /// does not require guessing that a blank screen is tappable.
   testWidgets('the overlay Home button reveals the launcher', (tester) async {

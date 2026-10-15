@@ -78,9 +78,24 @@ class LauncherHomeState extends State<LauncherHome>
   static const Duration revealIdleTimeout = Duration(minutes: 1);
   Timer? _revealTimer;
 
-  void _reveal() {
+  /// Whether the current reveal came from Home rather than a tap.
+  ///
+  /// A Home intent pauses and resumes the Activity, and pops any route above
+  /// this one, and both of those drop a reveal. The press was cancelled by
+  /// its own side effects, and Home only ever flashed the grid. A Home reveal
+  /// is left to the timeout and the workout starting instead.
+  bool _revealFromHome = false;
+
+  void _reveal({bool fromHome = false}) {
+    _revealFromHome = fromHome;
     if (!_backdropRevealed) setState(() => _backdropRevealed = true);
     _armRevealTimer();
+  }
+
+  void _endReveal() {
+    _revealTimer?.cancel();
+    _revealFromHome = false;
+    if (_backdropRevealed) setState(() => _backdropRevealed = false);
   }
 
   /// Restart the countdown, but only while there is a reveal to end.
@@ -88,8 +103,7 @@ class LauncherHomeState extends State<LauncherHome>
     _revealTimer?.cancel();
     if (!_backdropRevealed) return;
     _revealTimer = Timer(revealIdleTimeout, () {
-      if (!mounted || !_backdropRevealed) return;
-      setState(() => _backdropRevealed = false);
+      if (mounted) _endReveal();
     });
   }
 
@@ -147,7 +161,7 @@ class LauncherHomeState extends State<LauncherHome>
     // track floor actually on screen to replace the launcher with.
     refreshed.then((_) {
       if (!mounted || !_blankBackdrop || !_backdropRevealed) return;
-      setState(() => _backdropRevealed = false);
+      _endReveal();
     });
   }
 
@@ -216,7 +230,8 @@ class LauncherHomeState extends State<LauncherHome>
     await SpikeBridge.homeRouteVisible(true);
     await _refreshBackdrop();
     if (!mounted || !_blankBackdrop || !_backdropRevealed) return;
-    setState(() => _backdropRevealed = false);
+    if (_revealFromHome) return;
+    _endReveal();
   }
 
   /// Re-read the inventory whenever the launcher comes back to the front.
@@ -235,7 +250,8 @@ class LauncherHomeState extends State<LauncherHome>
     // answer, on a console whose only Home button is the one Stride draws.
     _refreshBackdrop().then((_) {
       if (!mounted || !_blankBackdrop || !_backdropRevealed) return;
-      setState(() => _backdropRevealed = false);
+      if (_revealFromHome) return;
+      _endReveal();
     });
   }
 
@@ -245,7 +261,7 @@ class LauncherHomeState extends State<LauncherHome>
   /// screen is tappable.
   void resetToLauncherRoot() {
     if (_editingPins) setState(() => _editingPins = false);
-    _reveal();
+    _reveal(fromHome: true);
     if (_pinnedScroll.hasClients) {
       _pinnedScroll.animateTo(
         0,
