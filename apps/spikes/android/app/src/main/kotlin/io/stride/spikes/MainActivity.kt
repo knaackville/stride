@@ -195,7 +195,9 @@ class MainActivity : FlutterActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (!isHomeRelaunch(intent)) return
+        val home = isHomeRelaunch(intent)
+        HomeIntentLog.record(applicationContext, intent, referrer, revealed = home && channel != null)
+        if (!home) return
 
         val activeChannel = channel ?: return
         // singleTask HOME launches reuse this Activity, so Dart must be told explicitly to unwind

@@ -166,6 +166,31 @@ void main() {
     expect(find.text('Pinned apps'), findsOneWidget);
   });
 
+  /// The grid was found up behind the track on an idle console. A reveal used
+  /// to last until the next workout, so it now ends after a minute untouched,
+  /// and touching the launcher restarts the minute.
+  testWidgets('a reveal nobody touches goes back to the backdrop', (
+    tester,
+  ) async {
+    floor = <String, Object?>{'on': true, 'visible': true, 'backdrop': true};
+    await pumpLauncher(tester);
+
+    await tester.tap(find.text('Show apps'));
+    await tester.pumpAndSettle();
+    expect(find.text('Pinned apps'), findsOneWidget);
+
+    // Still in use: a touch at 50s keeps it up past the original minute.
+    await tester.pump(const Duration(seconds: 50));
+    await tester.tapAt(const Offset(640, 500));
+    await tester.pump(const Duration(seconds: 50));
+    expect(find.text('Pinned apps'), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 11));
+    await tester.pumpAndSettle();
+    expect(find.text('Pinned apps'), findsNothing);
+    expect(find.text('Show apps'), findsOneWidget);
+  });
+
   /// The overlay's Home button is the second way out, and the only one that
   /// does not require guessing that a blank screen is tappable.
   testWidgets('the overlay Home button reveals the launcher', (tester) async {

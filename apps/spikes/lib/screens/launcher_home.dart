@@ -68,6 +68,31 @@ class LauncherHomeState extends State<LauncherHome>
   /// starting a workout. See [_syncGoalWithSession].
   bool _backdropRevealed = false;
 
+  /// How long a reveal lasts with nobody touching the launcher.
+  ///
+  /// None of the ways a reveal ends above happen while the console sits idle,
+  /// and a Home intent reveals the grid whether or not anyone tapped anything.
+  /// So the grid could come up on its own and then stay behind the track until
+  /// the next workout. A reveal is a glance; after a minute untouched, the
+  /// plain backdrop comes back.
+  static const Duration revealIdleTimeout = Duration(minutes: 1);
+  Timer? _revealTimer;
+
+  void _reveal() {
+    if (!_backdropRevealed) setState(() => _backdropRevealed = true);
+    _armRevealTimer();
+  }
+
+  /// Restart the countdown, but only while there is a reveal to end.
+  void _armRevealTimer() {
+    _revealTimer?.cancel();
+    if (!_backdropRevealed) return;
+    _revealTimer = Timer(revealIdleTimeout, () {
+      if (!mounted || !_backdropRevealed) return;
+      setState(() => _backdropRevealed = false);
+    });
+  }
+
   /// Whether the last thing [_workout] told us was that a session is under way.
   ///
   /// Only the *edge* out of idle is interesting, and the controller notifies
@@ -160,6 +185,7 @@ class LauncherHomeState extends State<LauncherHome>
       SpikeBridge.onTrackFloorVisibilityChanged = null;
     }
     _appstorePoll?.cancel();
+    _revealTimer?.cancel();
     _workout.removeListener(_syncGoalWithSession);
     _profiles.dispose();
     _workout.dispose();
@@ -219,7 +245,7 @@ class LauncherHomeState extends State<LauncherHome>
   /// screen is tappable.
   void resetToLauncherRoot() {
     if (_editingPins) setState(() => _editingPins = false);
-    if (!_backdropRevealed) setState(() => _backdropRevealed = true);
+    _reveal();
     if (_pinnedScroll.hasClients) {
       _pinnedScroll.animateTo(
         0,
@@ -340,106 +366,109 @@ class LauncherHomeState extends State<LauncherHome>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: DecoratedBox(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: <Color>[
-              StrideColors.ink,
-              Color(0xFF071119),
-              StrideColors.ink,
-            ],
+      // Any touch on the launcher counts as still using it. A Listener rather
+      // than a GestureDetector so it never competes with the tiles for a tap.
+      body: Listener(
+        onPointerDown: (_) => _armRevealTimer(),
+        child: DecoratedBox(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: <Color>[
+                StrideColors.ink,
+                Color(0xFF071119),
+                StrideColors.ink,
+              ],
+            ),
           ),
-        ),
-        // The plain backdrop is this gradient with the content taken away, so
-        // it matches Stride's scheme by construction rather than by a second
-        // colour somebody has to remember to keep in step. Branching here, above
-        // the SafeArea, is what makes it full-bleed: inside, it would leave the
-        // launcher's own padding as a visible frame around the track.
-        child: _blankBackdrop && !_backdropRevealed
-            ? _BlankBackdrop(
-                onReveal: () => setState(() => _backdropRevealed = true),
-              )
-            : SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(
-                    StrideSpace.xl,
-                    StrideSpace.lg,
-                    StrideSpace.xl,
-                    StrideSpace.xl,
-                  ),
-                  child: AnimatedBuilder(
-                    animation: _profiles,
-                    builder: (context, _) {
-                      final pinned = _pinnedApps();
-                      final editing = _editingPins && pinned.isNotEmpty;
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          SetupCard(status: _setup),
-                          _LauncherHeader(
-                            onAllApps: _openAllApps,
-                            onDiagnostics: _openDiagnostics,
-                            onSettings: _openSettings,
-                            onGoal: _startWorkoutFlow,
-                            goal: _goal,
-                            updateCount: _appstore.actionableCount,
-                            updatesLoading: _appstore.initializing,
-                            onUpdates: _openUpdates,
-                          ),
-                          const SizedBox(height: StrideSpace.lg),
-                          Expanded(
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                Expanded(
-                                  flex: 7,
-                                  child: _LauncherPanel(
-                                    profiles: _profiles,
-                                    loading: _loading,
-                                    error: _error,
-                                    pinned: pinned,
-                                    iconCache: _iconCache,
-                                    scrollController: _pinnedScroll,
-                                    onLaunch: _launch,
-                                    onAllApps: _openAllApps,
-                                    onUnpin: _confirmUnpin,
-                                    editing: editing,
-                                    onStartEditing: () =>
-                                        setState(() => _editingPins = true),
-                                    onDoneEditing: () =>
-                                        setState(() => _editingPins = false),
-                                    onReorder: _reorderPinned,
-                                  ),
-                                ),
-                                // Only one workout surface at a time. When the overlay is up it owns the
-                                // workout entirely, and drawing a second panel behind it produced two
-                                // sets of controls and two safety notices that disagreed with each other
-                                // — the overlay showing live speed while this panel still read
-                                // "Not measured". Contradictory safety copy is worse than none, because
-                                // it teaches the rider to stop believing the notice that matters.
-                                if (!_overlayRunning) ...[
-                                  const SizedBox(width: StrideSpace.lg),
+          // The plain backdrop is this gradient with the content taken away, so
+          // it matches Stride's scheme by construction rather than by a second
+          // colour somebody has to remember to keep in step. Branching here, above
+          // the SafeArea, is what makes it full-bleed: inside, it would leave the
+          // launcher's own padding as a visible frame around the track.
+          child: _blankBackdrop && !_backdropRevealed
+              ? _BlankBackdrop(onReveal: _reveal)
+              : SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(
+                      StrideSpace.xl,
+                      StrideSpace.lg,
+                      StrideSpace.xl,
+                      StrideSpace.xl,
+                    ),
+                    child: AnimatedBuilder(
+                      animation: _profiles,
+                      builder: (context, _) {
+                        final pinned = _pinnedApps();
+                        final editing = _editingPins && pinned.isNotEmpty;
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SetupCard(status: _setup),
+                            _LauncherHeader(
+                              onAllApps: _openAllApps,
+                              onDiagnostics: _openDiagnostics,
+                              onSettings: _openSettings,
+                              onGoal: _startWorkoutFlow,
+                              goal: _goal,
+                              updateCount: _appstore.actionableCount,
+                              updatesLoading: _appstore.initializing,
+                              onUpdates: _openUpdates,
+                            ),
+                            const SizedBox(height: StrideSpace.lg),
+                            Expanded(
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
                                   Expanded(
-                                    flex: 5,
-                                    child: _WorkoutPanel(
-                                      controller: _workout,
-                                      goal: _goal,
-                                      onStart: _startWorkoutFlow,
-                                      overlayStatus: _overlayStatus,
+                                    flex: 7,
+                                    child: _LauncherPanel(
+                                      profiles: _profiles,
+                                      loading: _loading,
+                                      error: _error,
+                                      pinned: pinned,
+                                      iconCache: _iconCache,
+                                      scrollController: _pinnedScroll,
+                                      onLaunch: _launch,
+                                      onAllApps: _openAllApps,
+                                      onUnpin: _confirmUnpin,
+                                      editing: editing,
+                                      onStartEditing: () =>
+                                          setState(() => _editingPins = true),
+                                      onDoneEditing: () =>
+                                          setState(() => _editingPins = false),
+                                      onReorder: _reorderPinned,
                                     ),
                                   ),
+                                  // Only one workout surface at a time. When the overlay is up it owns the
+                                  // workout entirely, and drawing a second panel behind it produced two
+                                  // sets of controls and two safety notices that disagreed with each other
+                                  // — the overlay showing live speed while this panel still read
+                                  // "Not measured". Contradictory safety copy is worse than none, because
+                                  // it teaches the rider to stop believing the notice that matters.
+                                  if (!_overlayRunning) ...[
+                                    const SizedBox(width: StrideSpace.lg),
+                                    Expanded(
+                                      flex: 5,
+                                      child: _WorkoutPanel(
+                                        controller: _workout,
+                                        goal: _goal,
+                                        onStart: _startWorkoutFlow,
+                                        overlayStatus: _overlayStatus,
+                                      ),
+                                    ),
+                                  ],
                                 ],
-                              ],
+                              ),
                             ),
-                          ),
-                        ],
-                      );
-                    },
+                          ],
+                        );
+                      },
+                    ),
                   ),
                 ),
-              ),
+        ),
       ),
     );
   }
@@ -1120,7 +1149,8 @@ class _EndOfGridSlot extends StatelessWidget {
   }
 }
 
-class _WorkoutPanel extends StatelessWidget {  const _WorkoutPanel({
+class _WorkoutPanel extends StatelessWidget {
+  const _WorkoutPanel({
     required this.controller,
     required this.goal,
     required this.onStart,
