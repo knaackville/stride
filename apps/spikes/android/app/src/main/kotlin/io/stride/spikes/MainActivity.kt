@@ -114,11 +114,13 @@ class MainActivity : FlutterActivity() {
         channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SpikeBridge.CHANNEL).also {
             it.setMethodCallHandler(SpikeBridge(applicationContext))
             registerWorkoutStateListener(it)
+            registerTrackFloorListener(it)
         }
     }
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
         removeWorkoutStateListener()
+        OverlayService.trackFloorVisibilityListener = null
         channel?.setMethodCallHandler(null)
         channel = null
         super.cleanUpFlutterEngine(flutterEngine)
@@ -222,6 +224,18 @@ class MainActivity : FlutterActivity() {
         }
         workoutStateListener = listener
         WorkoutSession.addListener(listener)
+    }
+
+    /**
+     * Tell Dart the track floor came or went, so the launcher re-asks whether to stand down behind
+     * it. Already on the main thread (the overlay posts it), so no hop is needed.
+     */
+    private fun registerTrackFloorListener(activeChannel: MethodChannel) {
+        OverlayService.trackFloorVisibilityListener = { visible ->
+            if (channel === activeChannel) {
+                activeChannel.invokeMethod("onTrackFloorVisibilityChanged", visible)
+            }
+        }
     }
 
     private fun removeWorkoutStateListener() {

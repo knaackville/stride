@@ -88,6 +88,11 @@ class LauncherHomeState extends State<LauncherHome>
     _workout.addListener(_syncGoalWithSession);
     _refreshAppstore();
     _refreshBackdrop();
+    // The floor also comes and goes at moments this screen has no hook for of
+    // its own: the overlay starting after the launcher at boot, or the chrome
+    // being hidden and shown again. Without this, the launcher kept whatever it
+    // last asked and drew the app grid half behind a track.
+    SpikeBridge.onTrackFloorVisibilityChanged = _refreshBackdrop;
   }
 
   /// Ending a workout clears its goal on the platform side, because the goal
@@ -151,6 +156,9 @@ class LauncherHomeState extends State<LauncherHome>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     routeObserver.unsubscribe(this);
+    if (SpikeBridge.onTrackFloorVisibilityChanged == _refreshBackdrop) {
+      SpikeBridge.onTrackFloorVisibilityChanged = null;
+    }
     _appstorePoll?.cancel();
     _workout.removeListener(_syncGoalWithSession);
     _profiles.dispose();

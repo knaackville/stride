@@ -125,6 +125,18 @@ class OverlayService : Service() {
         val trackFloorVisible: Boolean get() = active?.trackFloorView != null
 
         /**
+         * Told on the main thread whenever [trackFloorVisible] changes.
+         *
+         * The launcher used to only *ask*, at the moments it knew about: starting, coming back from
+         * another app or route, and the workout changing state. The floor also comes and goes at
+         * moments it does not know about — the overlay service starting after the launcher at boot,
+         * the rider hiding the chrome and showing it again — and each of those left the launcher on
+         * a stale answer: the app grid drawn half behind a track on an idle console.
+         */
+        @Volatile
+        var trackFloorVisibilityListener: ((Boolean) -> Unit)? = null
+
+        /**
          * Rebuild the overlay's windows, if one is running.
          *
          * Needed whenever something outside the service changes what the chrome is made of —
@@ -512,6 +524,24 @@ class OverlayService : Service() {
     private var speedRailVisible: Boolean = true
     private var trackFloorView: TrackFloorView? = null
     private var trackFloorRoot: View? = null
+
+    /**
+     * What [trackFloorVisibilityListener] was last told. Published from a posted check rather than
+     * inline, because a rebuild removes the floor and adds it straight back: reporting each half
+     * would flash the app grid up behind the track for one frame on every goal set or rail toggle.
+     */
+    private var floorVisibilityPublished = false
+    private val publishFloorVisibility = Runnable {
+        val visible = trackFloorView != null
+        if (visible == floorVisibilityPublished) return@Runnable
+        floorVisibilityPublished = visible
+        trackFloorVisibilityListener?.invoke(visible)
+    }
+
+    private fun scheduleFloorVisibilityPublish() {
+        mainHandler.removeCallbacks(publishFloorVisibility)
+        mainHandler.post(publishFloorVisibility)
+    }
 
     /**
      * Where the rider is around the lap. Outlives the floor's window on purpose: collapsing the
@@ -1508,6 +1538,7 @@ class OverlayService : Service() {
             // marker appear at the right spot on the very first frame rather than the first tick.
             sampleLapPosition()
             floor.positionSource = lapTracker::positionAt
+            scheduleFloorVisibilityPublish()
         } catch (_: Exception) {
             trackFloorRoot = null
             trackFloorView = null
@@ -1800,6 +1831,7 @@ class OverlayService : Service() {
         bottomBarView = null
         trackFloorRoot = null
         trackFloorView = null
+        scheduleFloorVisibilityPublish()
         goalRingRoot = null
         goalRingView = null
         clearNowPlayingRefs()

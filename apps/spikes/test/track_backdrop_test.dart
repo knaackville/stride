@@ -139,6 +139,33 @@ void main() {
     expect(find.text('Your workout apps, one tap away.'), findsOneWidget);
   });
 
+  /// Seen on the console on an idle afternoon: the track floor appeared after
+  /// the launcher had last asked (the overlay coming up after it at boot, or
+  /// the chrome being hidden and shown), and the launcher kept its stale
+  /// "no track" answer, drawing the app grid half behind the track. The
+  /// overlay now says when the floor comes or goes, and the launcher re-asks.
+  testWidgets('a track floor that appears later blanks the launcher', (
+    tester,
+  ) async {
+    floor = <String, Object?>{'on': true, 'visible': false, 'backdrop': true};
+    await pumpLauncher(tester);
+    expect(find.text('Pinned apps'), findsOneWidget);
+
+    floor = <String, Object?>{'on': true, 'visible': true, 'backdrop': true};
+    SpikeBridge.onTrackFloorVisibilityChanged!();
+    await tester.pumpAndSettle();
+
+    expect(find.text('Pinned apps'), findsNothing);
+    expect(find.text('Show apps'), findsOneWidget);
+
+    // And back again when it goes, so the console is never left blank.
+    floor = <String, Object?>{'on': true, 'visible': false, 'backdrop': true};
+    SpikeBridge.onTrackFloorVisibilityChanged!();
+    await tester.pumpAndSettle();
+
+    expect(find.text('Pinned apps'), findsOneWidget);
+  });
+
   /// The overlay's Home button is the second way out, and the only one that
   /// does not require guessing that a blank screen is tappable.
   testWidgets('the overlay Home button reveals the launcher', (tester) async {

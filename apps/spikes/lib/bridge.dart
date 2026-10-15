@@ -14,6 +14,7 @@ class SpikeBridge {
   /// Callbacks the *host* pushes to us, rather than us polling it.
   static void Function()? onHomePressed;
   static void Function(String state)? onWorkoutStateChanged;
+  static void Function()? onTrackFloorVisibilityChanged;
 
   /// Wire the host->Flutter direction. Call once at startup.
   ///
@@ -29,6 +30,9 @@ class SpikeBridge {
         case 'onWorkoutStateChanged':
           final state = call.arguments;
           if (state is String) onWorkoutStateChanged?.call(state);
+          return null;
+        case 'onTrackFloorVisibilityChanged':
+          onTrackFloorVisibilityChanged?.call();
           return null;
         default:
           return null;
